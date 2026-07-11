@@ -360,7 +360,14 @@ class TradingAgentsGraph:
             f"asset={asset_type}",
         ])
 
-    def propagate(self, company_name, trade_date, asset_type: str = "stock"):
+    def propagate(
+        self,
+        company_name,
+        trade_date,
+        asset_type: str = "stock",
+        on_progress=None,
+        callbacks: list | None = None,
+    ):
         """Run the trading agents graph for a company on a specific date.
 
         ``asset_type`` selects between the stock pipeline (default) and the
@@ -369,6 +376,18 @@ class TradingAgentsGraph:
         ``checkpoint_enabled`` is set in config, the graph is recompiled with
         a per-ticker SqliteSaver so a crashed run can resume from the last
         successful node on a subsequent invocation with the same ticker+date.
+
+        ``on_progress``: optional ``fn(node_name, delta, merged_state)`` called
+        after each graph node completes. When set, the graph streams in
+        ``stream_mode="updates"`` (node-keyed deltas) and the deltas are merged
+        over the initial state so the returned final state matches what
+        ``invoke`` would produce. The merged state passed to the callback is
+        live — treat it as read-only.
+
+        ``callbacks``: optional callback handlers forwarded to the graph
+        invocation config so they fire for tool executions too (LLM-level
+        callbacks attached at client construction don't see ToolNode runs —
+        this mirrors what the CLI does via ``get_graph_args``).
         """
         self.ticker = company_name
 
@@ -395,7 +414,13 @@ class TradingAgentsGraph:
                 logger.info("Starting fresh for %s on %s", company_name, trade_date)
 
         try:
-            return self._run_graph(company_name, trade_date, asset_type=asset_type)
+            return self._run_graph(
+                company_name,
+                trade_date,
+                asset_type=asset_type,
+                on_progress=on_progress,
+                callbacks=callbacks,
+            )
         finally:
             if self._checkpointer_ctx is not None:
                 self._checkpointer_ctx.__exit__(None, None, None)
@@ -417,7 +442,14 @@ class TradingAgentsGraph:
             )
         return write_report_tree(final_state, ticker, save_path)
 
-    def _run_graph(self, company_name, trade_date, asset_type: str = "stock"):
+    def _run_graph(
+        self,
+        company_name,
+        trade_date,
+        asset_type: str = "stock",
+        on_progress=None,
+        callbacks: list | None = None,
+    ):
         """Execute the graph and write the resulting state to disk and memory log."""
         # Initialize state — inject memory log context for PM and the
         # deterministically resolved instrument identity for all agents.
@@ -430,7 +462,7 @@ class TradingAgentsGraph:
             past_context=past_context,
             instrument_context=instrument_context,
         )
-        args = self.propagator.get_graph_args()
+        args = self.propagator.get_graph_args(callbacks=callbacks)
 
         # Inject thread_id so same ticker+date+graph-shape resumes; a different
         # date or graph shape starts fresh (#1089).
@@ -457,6 +489,19 @@ class TradingAgentsGraph:
             final_state = {}
             for chunk in trace:
                 final_state.update(chunk)
+        elif on_progress is not None:
+            # Node-keyed streaming: each chunk is {node_name: delta}. Merging
+            # deltas over the initial state recovers the same final state
+            # invoke() would return (messages end up partial, but nothing
+            # downstream of a run reads messages — reports and debate states
+            # are replaced whole per node).
+            args["stream_mode"] = "updates"
+            final_state = dict(init_agent_state)
+            for chunk in self.graph.stream(init_agent_state, **args):
+                for node_name, delta in chunk.items():
+                    if delta:
+                        final_state.update(delta)
+                    on_progress(node_name, delta, final_state)
         else:
             final_state = self.graph.invoke(init_agent_state, **args)
 
