@@ -20,7 +20,9 @@ ANALYST_ORDER = [
     ("Fundamentals Analyst", AnalystType.FUNDAMENTALS),
 ]
 
-CRYPTO_SUFFIXES = ("-USD", "-USDT", "-USDC", "-BTC", "-ETH")
+# Classification lives in the data layer (symbol_utils); re-exported here for
+# back-compat with callers that imported it from the CLI.
+from tradingagents.dataflows.symbol_utils import CRYPTO_SUFFIXES
 
 
 def is_valid_ticker_input(value: str) -> bool:
@@ -81,10 +83,9 @@ def normalize_ticker_symbol(ticker: str) -> str:
 def detect_asset_type(ticker: str) -> AssetType:
     """Classify on the canonical symbol so e.g. BTCUSD and BTC-USDT both read as
     crypto (#981/#982), matching what the data path will actually fetch."""
-    canonical = normalize_ticker_symbol(ticker)
-    if canonical.endswith(CRYPTO_SUFFIXES):
-        return AssetType.CRYPTO
-    return AssetType.STOCK
+    from tradingagents.dataflows.symbol_utils import detect_asset_type as _detect
+
+    return AssetType(_detect(ticker))
 
 
 def filter_analysts_for_asset_type(

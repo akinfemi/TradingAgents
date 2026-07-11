@@ -141,3 +141,22 @@ def normalize_symbol(raw: str) -> str:
 def is_yahoo_safe(symbol: str) -> bool:
     """True when ``symbol`` only contains characters Yahoo symbols use."""
     return bool(symbol) and _YAHOO_SAFE.fullmatch(symbol) is not None
+
+
+# Canonical (normalized) symbols with these suffixes are crypto pairs. Kept in
+# the data layer so programmatic callers classify without importing the CLI.
+CRYPTO_SUFFIXES = ("-USD", "-USDT", "-USDC", "-BTC", "-ETH")
+
+
+def detect_asset_type(ticker: str) -> str:
+    """Classify a ticker as ``"stock"`` or ``"crypto"``.
+
+    Classifies on the canonical symbol so e.g. ``BTCUSD`` and ``BTC-USDT``
+    both read as crypto (#981/#982), matching what the data path will
+    actually fetch. Returns the plain strings the graph's ``asset_type``
+    parameter takes (see :meth:`TradingAgentsGraph.propagate`).
+    """
+    canonical = normalize_symbol(ticker) if isinstance(ticker, str) else ticker
+    if isinstance(canonical, str) and canonical.endswith(CRYPTO_SUFFIXES):
+        return "crypto"
+    return "stock"
