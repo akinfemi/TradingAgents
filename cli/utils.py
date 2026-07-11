@@ -91,13 +91,12 @@ def detect_asset_type(ticker: str) -> AssetType:
 def filter_analysts_for_asset_type(
     analysts: list[AnalystType], asset_type: AssetType
 ) -> list[AnalystType]:
-    if asset_type != AssetType.CRYPTO:
-        return analysts
-    return [
-        analyst
-        for analyst in analysts
-        if analyst != AnalystType.FUNDAMENTALS
-    ]
+    from tradingagents.dataflows.symbol_utils import (
+        filter_analysts_for_asset_type as _filter,
+    )
+
+    kept = _filter([a.value for a in analysts], asset_type.value)
+    return [a for a in analysts if a.value in kept]
 
 
 def get_analysis_date() -> str:

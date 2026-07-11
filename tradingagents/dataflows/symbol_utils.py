@@ -156,7 +156,17 @@ def detect_asset_type(ticker: str) -> str:
     actually fetch. Returns the plain strings the graph's ``asset_type``
     parameter takes (see :meth:`TradingAgentsGraph.propagate`).
     """
-    canonical = normalize_symbol(ticker) if isinstance(ticker, str) else ticker
-    if isinstance(canonical, str) and canonical.endswith(CRYPTO_SUFFIXES):
-        return "crypto"
-    return "stock"
+    canonical = normalize_symbol(ticker)
+    return "crypto" if canonical.endswith(CRYPTO_SUFFIXES) else "stock"
+
+
+def filter_analysts_for_asset_type(analysts: list[str], asset_type: str) -> list[str]:
+    """Drop analysts that don't apply to an asset type.
+
+    Crypto has no financial statements, so the fundamentals analyst is
+    removed (#567). Lives in the data layer as the single source of this
+    rule; the CLI's enum-typed wrapper delegates here.
+    """
+    if asset_type != "crypto":
+        return list(analysts)
+    return [a for a in analysts if a != "fundamentals"]

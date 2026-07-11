@@ -141,6 +141,7 @@ class TradingAgentsGraph:
         self.curr_state = None
         self.ticker = None
         self.log_states_dict = {}  # date to full state dict
+        self.last_state_log_path = None  # set by _log_state after each run
 
         # Graph-shape-affecting run choices, kept for the checkpoint signature.
         self.selected_analysts = tuple(selected_analysts)
@@ -522,6 +523,10 @@ class TradingAgentsGraph:
         log_path = directory / f"full_states_log_{trade_date}.json"
         with open(log_path, "w", encoding="utf-8") as f:
             json.dump(self.log_states_dict[str(trade_date)], f, indent=4)
+
+        # Expose where the machine-readable state landed so programmatic
+        # callers don't have to reconstruct this internal layout.
+        self.last_state_log_path = log_path
 
     def process_signal(self, full_signal):
         """Process a signal to extract the core decision."""
