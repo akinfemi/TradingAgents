@@ -42,7 +42,7 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
 **Debate History:**
 {history}""" + get_language_instruction()
 
-        investment_plan = invoke_structured_or_freetext(
+        investment_plan, _ = invoke_structured_or_freetext(
             structured_llm,
             llm,
             prompt,

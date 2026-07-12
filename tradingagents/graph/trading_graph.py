@@ -545,6 +545,7 @@ class TradingAgentsGraph:
             "trade_date": final_state["trade_date"],
             "market_report": final_state["market_report"],
             "sentiment_report": final_state["sentiment_report"],
+            "sentiment_structured": final_state.get("sentiment_structured"),
             "news_report": final_state["news_report"],
             "fundamentals_report": final_state["fundamentals_report"],
             "investment_debate_state": {
@@ -568,6 +569,7 @@ class TradingAgentsGraph:
             },
             "investment_plan": final_state["investment_plan"],
             "final_trade_decision": final_state["final_trade_decision"],
+            "portfolio_decision": final_state.get("portfolio_decision"),
         }
 
         # Save to file. Reject ticker values that would escape the

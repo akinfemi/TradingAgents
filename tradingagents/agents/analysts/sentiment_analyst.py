@@ -102,7 +102,7 @@ def create_sentiment_analyst(llm):
         # data is already in the prompt.
         formatted_messages = prompt.format_messages(messages=state["messages"])
 
-        report_text = invoke_structured_or_freetext(
+        report_text, parsed = invoke_structured_or_freetext(
             structured_llm,
             llm,
             formatted_messages,
@@ -113,6 +113,9 @@ def create_sentiment_analyst(llm):
         return {
             "messages": [AIMessage(content=report_text)],
             "sentiment_report": report_text,
+            "sentiment_structured": (
+                parsed.model_dump(mode="json") if parsed is not None else None
+            ),
         }
 
     return sentiment_analyst_node

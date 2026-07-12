@@ -63,7 +63,7 @@ def create_portfolio_manager(llm):
 
 Be decisive and ground every conclusion in specific evidence from the analysts.{get_language_instruction()}"""
 
-        final_trade_decision = invoke_structured_or_freetext(
+        final_trade_decision, parsed = invoke_structured_or_freetext(
             structured_llm,
             llm,
             prompt,
@@ -87,6 +87,9 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
         return {
             "risk_debate_state": new_risk_debate_state,
             "final_trade_decision": final_trade_decision,
+            "portfolio_decision": (
+                parsed.model_dump(mode="json") if parsed is not None else None
+            ),
         }
 
     return portfolio_manager_node

@@ -55,6 +55,9 @@ class AgentState(MessagesState):
     # research step
     market_report: Annotated[str, "Report from the Market Analyst"]
     sentiment_report: Annotated[str, "Report from the Sentiment Analyst"]
+    sentiment_structured: Annotated[
+        dict | None, "Typed SentimentReport as a JSON dict; None on free-text fallback"
+    ]
     news_report: Annotated[
         str, "Report from the News Researcher of current world affairs"
     ]
@@ -73,4 +76,7 @@ class AgentState(MessagesState):
         RiskDebateState, "Current state of the debate on evaluating risk"
     ]
     final_trade_decision: Annotated[str, "Final decision made by the Risk Analysts"]
+    portfolio_decision: Annotated[
+        dict | None, "Typed PortfolioDecision as a JSON dict; None on free-text fallback"
+    ]
     past_context: Annotated[str, "Memory log context injected at run start (same-ticker decisions + cross-ticker lessons)"]
