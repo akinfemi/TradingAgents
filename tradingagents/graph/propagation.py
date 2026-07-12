@@ -22,6 +22,7 @@ class Propagator:
         asset_type: str = "stock",
         past_context: str = "",
         instrument_context: str = "",
+        extra_sentiment_blocks: list | None = None,
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -30,6 +31,12 @@ class Propagator:
         ``TradingAgentsGraph.resolve_instrument_context``). When empty, agents
         fall back to ticker-only context via
         ``get_instrument_context_from_state``.
+
+        ``extra_sentiment_blocks`` is an optional list of
+        ``(source_name, block_text)`` pairs — user-connected sentiment sources
+        already fetched by the caller, rendered as additional labeled data
+        blocks beside the built-in news/StockTwits/Reddit blocks. The
+        sentiment analyst still binds no tools (anti-fabrication design).
         """
         return {
             "messages": [("human", company_name)],
@@ -38,6 +45,9 @@ class Propagator:
             "instrument_context": instrument_context,
             "trade_date": str(trade_date),
             "past_context": past_context,
+            "extra_sentiment_blocks": [
+                (str(name), str(text)) for name, text in (extra_sentiment_blocks or [])
+            ],
             "investment_debate_state": InvestDebateState(
                 {
                     "bull_history": "",

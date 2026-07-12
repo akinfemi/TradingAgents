@@ -54,6 +54,13 @@ class AgentState(MessagesState):
 
     # research step
     market_report: Annotated[str, "Report from the Market Analyst"]
+    extra_sentiment_blocks: Annotated[
+        list,
+        "Optional (source_name, block_text) pairs injected as additional "
+        "labeled data blocks in the sentiment analyst's prompt — user-"
+        "connected sources fetched ONCE pre-run by the caller (the analyst "
+        "itself binds no tools by design)",
+    ]
     sentiment_report: Annotated[str, "Report from the Sentiment Analyst"]
     sentiment_structured: Annotated[
         dict | None, "Typed SentimentReport as a JSON dict; None on free-text fallback"

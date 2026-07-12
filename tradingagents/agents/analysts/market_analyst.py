@@ -9,7 +9,10 @@ from tradingagents.agents.utils.agent_utils import (
 )
 
 
-def create_market_analyst(llm):
+def create_market_analyst(llm, extra_tools=None):
+    """``extra_tools``: optional user-connected tools (MCP/REST connectors)
+    appended to the built-ins. The same list must be registered in the
+    graph's tool node (see ``_create_tool_nodes``) or calls to them fail."""
 
     def market_analyst_node(state):
         current_date = state["trade_date"]
@@ -19,7 +22,7 @@ def create_market_analyst(llm):
             get_stock_data,
             get_indicators,
             get_verified_market_snapshot,
-        ]
+        ] + list(extra_tools or [])
 
         system_message = (
             """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:

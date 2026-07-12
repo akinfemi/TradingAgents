@@ -71,6 +71,7 @@ class TradingAgentsGraph:
         debug=False,
         config: dict[str, Any] = None,
         callbacks: list | None = None,
+        extra_tools: dict[str, list] | None = None,
     ):
         """Initialize the trading agents graph and components.
 
@@ -79,10 +80,22 @@ class TradingAgentsGraph:
             debug: Whether to run in debug mode
             config: Configuration dictionary. If None, uses default config
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
+            extra_tools: Optional user-connected LangChain tools per analyst key
+                ("market" | "news" | "fundamentals"). Bound to that analyst's
+                LLM AND registered in its ToolNode, so the model can both see
+                and execute them. The sentiment analyst accepts no tools by
+                design — extra sentiment SOURCES travel through the initial
+                state (see ``Propagator.create_initial_state``).
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         self.callbacks = callbacks or []
+        _EXTRA_TOOL_KEYS = ("market", "news", "fundamentals")
+        if extra_tools and (bad := set(extra_tools) - set(_EXTRA_TOOL_KEYS)):
+            raise ValueError(
+                f"extra_tools keys must be in {_EXTRA_TOOL_KEYS}, got {sorted(bad)}"
+            )
+        self.extra_tools = {k: list(v) for k, v in (extra_tools or {}).items() if v}
 
         # Update the interface's config
         set_config(self.config)
@@ -129,6 +142,7 @@ class TradingAgentsGraph:
             self.deep_thinking_llm,
             self.tool_nodes,
             self.conditional_logic,
+            extra_tools=self.extra_tools,
         )
 
         self.propagator = Propagator(
@@ -187,7 +201,13 @@ class TradingAgentsGraph:
         return kwargs
 
     def _create_tool_nodes(self) -> dict[str, ToolNode]:
-        """Create tool nodes for different data sources using abstract methods."""
+        """Create tool nodes for different data sources using abstract methods.
+
+        User-connected extra tools are appended to their analyst's node so the
+        executor side always matches what the factory binds to the LLM.
+        getattr, not attribute access: tests exercise this unbound (self=None)
+        to check the built-in tool sets without building LLMs."""
+        extra = getattr(self, "extra_tools", None) or {}
         return {
             "market": ToolNode(
                 [
@@ -200,6 +220,7 @@ class TradingAgentsGraph:
                     # the call fails and the model reports it "unavailable").
                     get_verified_market_snapshot,
                 ]
+                + extra.get("market", [])
             ),
             "social": ToolNode(
                 [
@@ -216,6 +237,7 @@ class TradingAgentsGraph:
                     get_macro_indicators,
                     get_prediction_markets,
                 ]
+                + extra.get("news", [])
             ),
             "fundamentals": ToolNode(
                 [
@@ -225,6 +247,7 @@ class TradingAgentsGraph:
                     get_cashflow,
                     get_income_statement,
                 ]
+                + extra.get("fundamentals", [])
             ),
         }
 
@@ -367,6 +390,7 @@ class TradingAgentsGraph:
         asset_type: str = "stock",
         on_progress=None,
         callbacks: list | None = None,
+        extra_sentiment_blocks: list | None = None,
     ):
         """Run the trading agents graph for a company on a specific date.
 
@@ -420,6 +444,7 @@ class TradingAgentsGraph:
                 asset_type=asset_type,
                 on_progress=on_progress,
                 callbacks=callbacks,
+                extra_sentiment_blocks=extra_sentiment_blocks,
             )
         finally:
             if self._checkpointer_ctx is not None:
@@ -449,6 +474,7 @@ class TradingAgentsGraph:
         asset_type: str = "stock",
         on_progress=None,
         callbacks: list | None = None,
+        extra_sentiment_blocks: list | None = None,
     ):
         """Execute the graph and write the resulting state to disk and memory log."""
         # Initialize state — inject memory log context for PM and the
@@ -461,6 +487,7 @@ class TradingAgentsGraph:
             asset_type=asset_type,
             past_context=past_context,
             instrument_context=instrument_context,
+            extra_sentiment_blocks=extra_sentiment_blocks,
         )
         args = self.propagator.get_graph_args(callbacks=callbacks)
 

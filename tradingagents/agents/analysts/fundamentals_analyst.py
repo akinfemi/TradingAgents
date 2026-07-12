@@ -10,7 +10,11 @@ from tradingagents.agents.utils.agent_utils import (
 )
 
 
-def create_fundamentals_analyst(llm):
+def create_fundamentals_analyst(llm, extra_tools=None):
+    """``extra_tools``: optional user-connected tools (MCP/REST connectors)
+    appended to the built-ins. The same list must be registered in the
+    graph's tool node (see ``_create_tool_nodes``) or calls to them fail."""
+
     def fundamentals_analyst_node(state):
         current_date = state["trade_date"]
         instrument_context = get_instrument_context_from_state(state)
@@ -20,7 +24,7 @@ def create_fundamentals_analyst(llm):
             get_balance_sheet,
             get_cashflow,
             get_income_statement,
-        ]
+        ] + list(extra_tools or [])
 
         system_message = (
             "You are a researcher tasked with analyzing fundamental information over the past week about a company. Please write a comprehensive report of the company's fundamental information such as financial documents, company profile, basic company financials, and company financial history to gain a full view of the company's fundamental information to inform traders. Make sure to include as much detail as possible. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."

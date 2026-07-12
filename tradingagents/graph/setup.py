@@ -51,12 +51,21 @@ class GraphSetup:
         deep_thinking_llm: Any,
         tool_nodes: dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
+        extra_tools: dict[str, list] | None = None,
     ):
-        """Initialize with required components."""
+        """Initialize with required components.
+
+        ``extra_tools``: optional user-connected tools per analyst key
+        ("market" | "news" | "fundamentals"). Passed to the analyst factory
+        so the LLM binds them; the caller must ALSO include them in the
+        matching ``tool_nodes`` entry or the executor can't run them. The
+        sentiment analyst deliberately takes none — it binds no tools by
+        design (extra sentiment SOURCES travel through state instead)."""
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
+        self.extra_tools = extra_tools or {}
 
     def setup_graph(
         self, selected_analysts=("market", "social", "news", "fundamentals")
@@ -73,10 +82,16 @@ class GraphSetup:
         plan = build_analyst_execution_plan(selected_analysts)
 
         analyst_factories = {
-            "market": lambda: create_market_analyst(self.quick_thinking_llm),
+            "market": lambda: create_market_analyst(
+                self.quick_thinking_llm, extra_tools=self.extra_tools.get("market")
+            ),
             "social": lambda: create_sentiment_analyst(self.quick_thinking_llm),
-            "news": lambda: create_news_analyst(self.quick_thinking_llm),
-            "fundamentals": lambda: create_fundamentals_analyst(self.quick_thinking_llm),
+            "news": lambda: create_news_analyst(
+                self.quick_thinking_llm, extra_tools=self.extra_tools.get("news")
+            ),
+            "fundamentals": lambda: create_fundamentals_analyst(
+                self.quick_thinking_llm, extra_tools=self.extra_tools.get("fundamentals")
+            ),
         }
 
         # Create researcher and manager nodes
