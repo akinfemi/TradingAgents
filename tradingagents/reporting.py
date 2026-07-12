@@ -11,7 +11,13 @@ from pathlib import Path
 
 
 def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
-    """Save a completed run's reports to ``save_path``; return the complete-report path."""
+    """Save a run's reports to ``save_path``; return the complete-report path.
+
+    PARTIAL STATES ARE A SUPPORTED INPUT: every section is gated on
+    ``.get()``, so callers may pass the merged state of an interrupted run
+    to salvage whatever sections completed (see test_reporting_partial_state).
+    Keep it that way — downstream salvage depends on it.
+    """
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
     sections = []

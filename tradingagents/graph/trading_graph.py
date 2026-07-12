@@ -499,9 +499,20 @@ class TradingAgentsGraph:
             final_state = dict(init_agent_state)
             for chunk in self.graph.stream(init_agent_state, **args):
                 for node_name, delta in chunk.items():
-                    if delta:
-                        final_state.update(delta)
-                    on_progress(node_name, delta, final_state)
+                    # LangGraph metadata pseudo-entries are not node output.
+                    if node_name.startswith("__"):
+                        continue
+                    # A node writing the same channel repeatedly yields a
+                    # LIST of single-key dicts (langgraph map_output_updates);
+                    # today's nodes return one dict, but don't crash the run
+                    # when a future node doesn't.
+                    deltas = delta if isinstance(delta, list) else [delta]
+                    merged: dict = {}
+                    for d in deltas:
+                        if d:
+                            final_state.update(d)
+                            merged.update(d)
+                    on_progress(node_name, merged, final_state)
         else:
             final_state = self.graph.invoke(init_agent_state, **args)
 
