@@ -11,6 +11,7 @@ from yfinance.exceptions import YFRateLimitError
 from .config import get_config
 from .symbol_utils import NoMarketDataError, normalize_symbol
 from .utils import safe_ticker_component
+from .yf_throttle import yf_gate
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,10 @@ def yf_retry(func, max_retries=3, base_delay=2.0):
     """
     for attempt in range(max_retries + 1):
         try:
+            # Every yfinance network call in the dataflows goes through this
+            # wrapper, so the vendor pacing gate lives here (it also paces
+            # the retries themselves).
+            yf_gate()
             return func()
         except YFRateLimitError:
             if attempt < max_retries:
