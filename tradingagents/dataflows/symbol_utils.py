@@ -60,6 +60,10 @@ _ALIASES = {
     "BCOUSD": "BZ=F", "UKOIL": "BZ=F", "BRENT": "BZ=F",
     "NATGAS": "NG=F", "XNGUSD": "NG=F",
     "COPPER": "HG=F", "XCUUSD": "HG=F",
+    # Share classes: brokers and NYSE tape write a dot (BRK.B), Yahoo wants
+    # a dash. Alias rows, not a blanket dot->dash rule — exchange suffixes
+    # like 0700.HK legitimately keep their dot.
+    "BRK.A": "BRK-A", "BRK.B": "BRK-B", "BF.A": "BF-A", "BF.B": "BF-B",
     # Index CFDs -> Yahoo index symbols
     "SPX500": "^GSPC", "US500": "^GSPC", "SPX": "^GSPC",
     "NAS100": "^NDX", "US100": "^NDX", "USTEC": "^NDX",
