@@ -19,6 +19,7 @@ from tradingagents.graph.digest import (
 
 def _sample_digest() -> ReportDigest:
     return ReportDigest(
+        headline="Overweight: operating strength outweighs capex risk",
         bull_thesis="Growth is already in the numbers.",
         bull_points=[DigestPoint(title="Revenue compounding", detail="~18% YoY on a $400B base.")],
         bear_thesis="No margin of safety at 28x forward.",

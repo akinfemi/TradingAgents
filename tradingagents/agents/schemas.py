@@ -366,6 +366,14 @@ class ReportDigest(BaseModel):
     source reports — never invented.
     """
 
+    headline: str = Field(
+        description=(
+            "A 6-12 word editorial title stating the report's view, like a "
+            "sell-side note headline: '<Rating>: <the one reason>', e.g. "
+            "'Overweight: operating strength outweighs capex risk'. No "
+            "sizing mechanics, no tranches, no price levels."
+        ),
+    )
     bull_thesis: str = Field(
         description="The bull researcher's core thesis in one punchy sentence.",
     )
