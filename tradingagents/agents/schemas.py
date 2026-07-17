@@ -325,6 +325,151 @@ class SentimentReport(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# Report digest (post-run extraction for the rendered report page / PDF)
+# ---------------------------------------------------------------------------
+
+
+class DigestPoint(BaseModel):
+    """One crisp evidence point: a bolded headline plus a single sentence."""
+
+    title: str = Field(
+        description="Three-to-six-word headline for the point, e.g. 'Capex is strategic, not destructive'.",
+    )
+    detail: str = Field(
+        description=(
+            "One sentence of supporting evidence with the concrete numbers "
+            "from the source report, e.g. '$24.6B of free cash flow survived "
+            "$27.9B of quarterly capex'."
+        ),
+    )
+
+
+class RiskLens(BaseModel):
+    """One risk analyst's position, condensed to a stance plus rationale."""
+
+    stance: str = Field(
+        description="One short headline sentence capturing the position, e.g. 'Lean into the momentum.'",
+    )
+    summary: str = Field(
+        description="One to two sentences of the strongest supporting rationale, with concrete numbers where the analyst cited them.",
+    )
+
+
+class ReportDigest(BaseModel):
+    """Curated, chart-side summary layer extracted from a completed run.
+
+    One extraction call after the pipeline finishes turns the multi-thousand-
+    word transcripts into the crisp content the report page and PDF render:
+    thesis lines, evidence bullets, risk stances, conviction, and the exit
+    triggers the decision leaves behind. Every claim must be drawn from the
+    source reports — never invented.
+    """
+
+    bull_thesis: str = Field(
+        description="The bull researcher's core thesis in one punchy sentence.",
+    )
+    bull_points: list[DigestPoint] = Field(
+        description="The bull's 3-4 strongest evidence points, each anchored in numbers from the debate.",
+    )
+    bear_thesis: str = Field(
+        description="The bear researcher's core thesis in one punchy sentence.",
+    )
+    bear_points: list[DigestPoint] = Field(
+        description="The bear's 3-4 strongest evidence points, each anchored in numbers from the debate.",
+    )
+    ruling: str = Field(
+        description=(
+            "The research manager's ruling in two to three sentences: which "
+            "side won, the deciding argument, and what caps or boosts "
+            "conviction. Written for a reader who skipped the transcripts."
+        ),
+    )
+    debate_winner: Literal["bull", "bear", "split"] = Field(
+        description="Which side the research manager's ruling favored; 'split' when genuinely balanced.",
+    )
+    market_excerpt: str | None = Field(
+        default=None,
+        description="Two-sentence takeaway of the market/technical report (trend, momentum, entry read). None if that report is absent.",
+    )
+    sentiment_excerpt: str | None = Field(
+        default=None,
+        description="Two-sentence takeaway of the sentiment report (direction, sources, froth signals). None if absent.",
+    )
+    news_excerpt: str | None = Field(
+        default=None,
+        description="Two-sentence takeaway of the news report (headline mix, catalysts, risks). None if absent.",
+    )
+    fundamentals_excerpt: str | None = Field(
+        default=None,
+        description="Two-to-three-sentence takeaway of the fundamentals report with the key figures (margins, growth, balance sheet). None if absent.",
+    )
+    trader_excerpt: str | None = Field(
+        default=None,
+        description="One-to-two-sentence summary of the trader's transaction plan (action, entry style, levels). None if absent.",
+    )
+    risk_aggressive: RiskLens | None = Field(
+        default=None, description="The aggressive risk analyst's lens. None if that debate is absent.",
+    )
+    risk_neutral: RiskLens | None = Field(
+        default=None, description="The neutral risk analyst's lens. None if absent.",
+    )
+    risk_conservative: RiskLens | None = Field(
+        default=None, description="The conservative risk analyst's lens. None if absent.",
+    )
+    risk_alignment: Literal["aggressive", "neutral", "conservative"] | None = Field(
+        default=None,
+        description="Which risk lens the final decision sided with, if the risk judge or portfolio manager says so.",
+    )
+    conviction: int = Field(
+        ge=0,
+        le=100,
+        description=(
+            "Conviction behind the final rating, 0-100. Calibrate from the "
+            "language of the ruling and final decision: a decisive sweep with "
+            "aligned analysts is 80+, a narrow win with real concerns 55-75, "
+            "a coin-flip 40-55."
+        ),
+    )
+    conviction_note: str = Field(
+        description=(
+            "One short clause (under 10 words) explaining the conviction "
+            "level, e.g. 'Measured -- bull won the debate, not decisively'. "
+            "Rendered beside a meter; it must stay short."
+        ),
+    )
+    entry_style: str | None = Field(
+        default=None,
+        description=(
+            "How the decision says to enter, as a short phrase (under 8 "
+            "words), e.g. 'Pullbacks over breakouts' or '3-4 tranches over "
+            "several weeks'. None if unspecified."
+        ),
+    )
+    sizing: str | None = Field(
+        default=None,
+        description=(
+            "Position sizing from the decision, as a short phrase (under 6 "
+            "words), e.g. '4-6% core position'. Rendered as a fact chip -- "
+            "no clauses or caveats. None if unspecified."
+        ),
+    )
+    review_cycle: str | None = Field(
+        default=None,
+        description=(
+            "When to revisit the call, as a short phrase (under 6 words), "
+            "e.g. 'Quarterly, or on trigger'. None if unspecified."
+        ),
+    )
+    exit_triggers: list[DigestPoint] = Field(
+        description=(
+            "The 3-4 conditions under which the decision says to exit, trim, "
+            "or reverse — the watchlist this report leaves behind. Each title "
+            "names the trigger, each detail says what observable change fires it."
+        ),
+    )
+
+
 def render_sentiment_report(report: SentimentReport) -> str:
     """Render a SentimentReport to the markdown shape the rest of the system expects.
 

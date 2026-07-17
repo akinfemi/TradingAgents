@@ -36,6 +36,7 @@ from tradingagents.reporting import write_report_tree
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
 from .conditional_logic import ConditionalLogic
+from .digest import generate_report_digest
 from .propagation import Propagator
 from .reflection import Reflector
 from .setup import GraphSetup
@@ -546,6 +547,14 @@ class TradingAgentsGraph:
         # Store current state for reflection.
         self.curr_state = final_state
 
+        # Curated summary layer for report surfaces (page, PDF). Optional
+        # decoration on the quick model — generate_report_digest returns None
+        # on any failure rather than taking the finished run down.
+        if self.config.get("report_digest", True):
+            final_state["report_digest"] = generate_report_digest(
+                self.quick_thinking_llm, final_state, callbacks=callbacks
+            )
+
         # Log state to disk.
         self._log_state(trade_date, final_state)
 
@@ -597,6 +606,7 @@ class TradingAgentsGraph:
             "investment_plan": final_state["investment_plan"],
             "final_trade_decision": final_state["final_trade_decision"],
             "portfolio_decision": final_state.get("portfolio_decision"),
+            "report_digest": final_state.get("report_digest"),
         }
 
         # Save to file. Reject ticker values that would escape the
