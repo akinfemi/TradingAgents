@@ -79,7 +79,23 @@ def build_digest_prompt(final_state: dict, computed_context: str | None = None) 
         "- Do not quote a valuation multiple from the source text without "
         "sanity-checking it against the other figures you are quoting "
         "(price, EPS, market cap, net income); drop or correct multiples "
-        "that contradict them.",
+        "that contradict them. Never cite a forward multiple without the "
+        "forward figure it implies.",
+        # Style rules from professional review: repetition, loose rating
+        # words, imperatives, and inflated ratios are machine-output tells.
+        "- Each field must contribute NEW information. Never restate the "
+        "same statistics cluster across fields — later fields reference "
+        "conclusions ('the balance-sheet strength above'), not the numbers "
+        "again.",
+        "- Rating words (Buy/Overweight/Hold/Underweight/Sell) are formal "
+        "ratings only — for actions use accumulate/add/hold off/trim/exit.",
+        "- Descriptive voice, never imperative commands: 'the plan calls "
+        "for accumulating in tranches', not 'Buy now'.",
+        "- State ratios honestly: 'doubled/tripled' only when the ratio "
+        "rounds there; otherwise give the multiple (e.g. 'rose ~2.6x').",
+        "- If cash and equivalents exceed total debt, that is a NET CASH "
+        "position — never describe it as net debt; if you cannot reconcile "
+        "a net-debt figure with the cash and debt figures you cite, omit it.",
         "",
     ]
     if computed_context:
