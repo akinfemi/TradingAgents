@@ -122,3 +122,29 @@ class TestGenerateReportDigest:
         llm = MagicMock()
         llm.with_structured_output.side_effect = NotImplementedError
         assert generate_report_digest(llm, _state()) is None
+
+
+@pytest.mark.unit
+class TestComputedContext:
+    def test_prompt_includes_authoritative_block_and_basis_rules(self):
+        ctx = "- Share price (close 2026-04-30): $382.99\n- P/E (price/FY25 EPS): 35.4x"
+        prompt = build_digest_prompt(_state(), computed_context=ctx)
+        assert "Computed figures (authoritative" in prompt
+        assert "P/E (price/FY25 EPS): 35.4x" in prompt
+        assert "THESE are correct" in prompt
+        # Consistency rules present regardless of context.
+        assert "Label the basis" in prompt
+        assert "sanity-checking" in prompt
+
+    def test_prompt_omits_block_without_context(self):
+        prompt = build_digest_prompt(_state())
+        assert "Computed figures" not in prompt
+        assert "Label the basis" in prompt
+
+    def test_generate_forwards_computed_context(self):
+        llm = MagicMock()
+        structured = llm.with_structured_output.return_value
+        structured.invoke.return_value = _sample_digest()
+        generate_report_digest(llm, _state(), computed_context="- P/E: 35.4x")
+        prompt = structured.invoke.call_args.args[0]
+        assert "- P/E: 35.4x" in prompt

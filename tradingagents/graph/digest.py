@@ -57,7 +57,7 @@ def _sources_from_state(final_state: dict) -> list[tuple[str, str | None]]:
     ]
 
 
-def build_digest_prompt(final_state: dict) -> str:
+def build_digest_prompt(final_state: dict, computed_context: str | None = None) -> str:
     ticker = final_state.get("company_of_interest", "the instrument")
     trade_date = final_state.get("trade_date", "")
     parts = [
@@ -70,9 +70,26 @@ def build_digest_prompt(final_state: dict) -> str:
         "- Every claim and number must come from the source text below. Never invent figures.",
         "- Prefer the points each side argued hardest; keep the concrete numbers.",
         "- Write for a reader deciding whether to trust the verdict without reading the transcripts.",
-        "- Leave a field null when its source report is missing from the input.",
+        "- Leave a field null when its source report is missing from the input "
+        "- never write placeholder text such as 'Not provided' into a field.",
+        # Numeric-consistency rules: a professional reader divides price by
+        # EPS first — one contradicted multiple discredits the whole report.
+        "- Label the basis of every margin or valuation multiple you quote "
+        "(TTM vs fiscal-year), and keep one basis consistent within a field.",
+        "- Do not quote a valuation multiple from the source text without "
+        "sanity-checking it against the other figures you are quoting "
+        "(price, EPS, market cap, net income); drop or correct multiples "
+        "that contradict them.",
         "",
     ]
+    if computed_context:
+        parts.append(
+            "## Computed figures (authoritative — derived from structured "
+            "vendor data, not model text)\n\n"
+            "When the source text disagrees with these figures, THESE are "
+            "correct: quote these and do not repeat the contradicted number.\n\n"
+            f"{computed_context}\n"
+        )
     for label, text in _sources_from_state(final_state):
         if text:
             parts.append(f"## {label}\n\n{text}\n")
@@ -83,8 +100,14 @@ def generate_report_digest(
     quick_llm: Any,
     final_state: dict,
     callbacks: list | None = None,
+    computed_context: str | None = None,
 ) -> dict | None:
     """Extract a ``ReportDigest`` from a finished run's state as a plain dict.
+
+    ``computed_context``: optional block of authoritative figures computed
+    from structured vendor data (price, EPS, computed multiples). When given,
+    the prompt instructs the model to prefer these over any contradicting
+    numbers in the transcripts — the numeric-consistency pass.
 
     Returns ``None`` — never raises — when the provider lacks structured
     output or the call fails; the digest is optional and must not take a
@@ -95,7 +118,9 @@ def generate_report_digest(
         return None
     try:
         config = {"callbacks": callbacks} if callbacks else None
-        result = structured_llm.invoke(build_digest_prompt(final_state), config=config)
+        result = structured_llm.invoke(
+            build_digest_prompt(final_state, computed_context), config=config
+        )
         if result is None:
             raise ValueError("structured output returned no parsed result")
         return result.model_dump(mode="json")
