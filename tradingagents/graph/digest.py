@@ -96,6 +96,17 @@ def build_digest_prompt(final_state: dict, computed_context: str | None = None) 
         "- If cash and equivalents exceed total debt, that is a NET CASH "
         "position — never describe it as net debt; if you cannot reconcile "
         "a net-debt figure with the cash and debt figures you cite, omit it.",
+        "- Only quote a figure whose basis you can verify from the computed "
+        "figures or from arithmetic on the numbers quoted beside it; when a "
+        "source figure fails that check (an unexplained net debt, a forward "
+        "multiple with no forward estimate, a margin that does not match its "
+        "own numerator/denominator), OMIT it rather than repeat it.",
+        "- Exit triggers must be falsifiable from the current numbers: state "
+        "the threshold and the current value's side of it ('if quarterly FCF "
+        "falls below $20B; currently $24.6B'), never 'remains' below a level "
+        "it is currently above.",
+        "- In risk-lens stances use descriptive phrasing ('favors staged "
+        "entry'), not imperative advice ('demand proof before committing').",
         "",
     ]
     if computed_context:
