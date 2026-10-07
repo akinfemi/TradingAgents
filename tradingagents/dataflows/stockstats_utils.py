@@ -10,6 +10,8 @@ from yfinance.exceptions import YFRateLimitError
 
 from .config import get_config
 from .symbol_utils import NoMarketDataError, normalize_symbol
+from .tiingo import fetch_daily as fetch_tiingo_daily
+from .tiingo import price_vendor, tiingo_symbol
 from .utils import safe_ticker_component
 from .yf_throttle import yf_gate
 
@@ -153,6 +155,31 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     end_str = (today_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
     os.makedirs(config["data_cache_dir"], exist_ok=True)
+
+    # Licensed price source first when configured; an instrument Tiingo
+    # doesn't list (indices, non-US suffixes) falls back to Yahoo. The
+    # vendor is in the cache filename so report surfaces know which source
+    # produced the prices they show.
+    data = None
+    if price_vendor(config) == "tiingo" and tiingo_symbol(canonical) is not None:
+        tiingo_file = os.path.join(
+            config["data_cache_dir"],
+            f"{safe_symbol}-Tiingo-data-{start_str}-{end_str}.csv",
+        )
+        if os.path.exists(tiingo_file):
+            cached = pd.read_csv(tiingo_file, on_bad_lines="skip", encoding="utf-8")
+            if not cached.empty and "Close" in cached.columns:
+                data = cached
+        if data is None:
+            try:
+                fetched = fetch_tiingo_daily(
+                    canonical, start_str, today_date.strftime("%Y-%m-%d")
+                )
+                fetched.to_csv(tiingo_file, index=False, encoding="utf-8")
+                data = fetched
+            except NoMarketDataError as exc:
+                logger.warning("Tiingo has no prices for %s (%s); using Yahoo", canonical, exc)
+
     data_file = os.path.join(
         config["data_cache_dir"],
         f"{safe_symbol}-YFin-data-{start_str}-{end_str}.csv",
@@ -161,8 +188,7 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     # A cached file may be empty if a prior fetch failed (unknown symbol,
     # transient rate limit). Treat an empty/columnless cache as a miss and
     # re-fetch rather than serving the poisoned file forever.
-    data = None
-    if os.path.exists(data_file):
+    if data is None and os.path.exists(data_file):
         cached = pd.read_csv(data_file, on_bad_lines="skip", encoding="utf-8")
         if not cached.empty and "Close" in cached.columns:
             data = cached

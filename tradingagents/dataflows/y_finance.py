@@ -12,7 +12,9 @@ from .stockstats_utils import (
     load_ohlcv,
     yf_retry,
 )
+from .config import get_config
 from .symbol_utils import NoMarketDataError, normalize_symbol
+from .tiingo import price_vendor, tiingo_symbol
 
 
 def get_YFin_data_online(
@@ -26,13 +28,22 @@ def get_YFin_data_online(
 
     # Resolve broker/forex symbols to Yahoo's convention (XAUUSD+ -> GC=F).
     canonical = normalize_symbol(symbol)
-    ticker = yf.Ticker(canonical)
+    source = "Yahoo Finance"
 
-    # yfinance treats ``end`` as EXCLUSIVE, so it would drop the requested
-    # end_date row (and the current day when end_date is today). Request one day
-    # past end_date so the requested range is actually inclusive (#986/#987).
-    end_inclusive = (end_dt + relativedelta(days=1)).strftime("%Y-%m-%d")
-    data = yf_retry(lambda: ticker.history(start=start_date, end=end_inclusive))
+    if price_vendor(get_config()) == "tiingo" and tiingo_symbol(canonical) is not None:
+        # The licensed source, via the same per-run cache the indicators and
+        # the snapshot read, so the agent quotes one set of prices.
+        frame = load_ohlcv(canonical, end_date)
+        frame = frame[frame["Date"] >= pd.Timestamp(start_date)]
+        data = frame.set_index("Date")
+        source = "Tiingo"
+    else:
+        ticker = yf.Ticker(canonical)
+        # yfinance treats ``end`` as EXCLUSIVE, so it would drop the requested
+        # end_date row (and the current day when end_date is today). Request one
+        # day past end_date so the requested range is inclusive (#986/#987).
+        end_inclusive = (end_dt + relativedelta(days=1)).strftime("%Y-%m-%d")
+        data = yf_retry(lambda: ticker.history(start=start_date, end=end_inclusive))
 
     # Empty result means the symbol is unknown/delisted. Raise a typed error
     # instead of returning prose: the routing layer turns it into a single
@@ -64,6 +75,7 @@ def get_YFin_data_online(
     # agent (and user) can see which instrument was actually priced.
     label = canonical if canonical == symbol.upper() else f"{canonical} (from {symbol})"
     header = f"# Stock data for {label} from {start_date} to {end_date}\n"
+    header += f"# Source: {source}\n"
     header += f"# Total records: {len(data)}\n"
     header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
 

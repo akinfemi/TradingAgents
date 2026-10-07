@@ -130,6 +130,10 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "ECB Bank of England BOJ central bank policy",
         "oil commodities supply chain energy",
     ],
+    # OHLCV price source for every price consumer (get_stock_data, indicators,
+    # the verified snapshot): "yfinance" or "tiingo" (licensed; needs
+    # TIINGO_API_KEY). TRADINGAGENTS_PRICE_VENDOR overrides.
+    "price_vendor": os.getenv("TRADINGAGENTS_PRICE_VENDOR", "yfinance"),
     # Data vendor configuration
     # Category-level configuration (default for all tools in category).
     # The configured value is the exact vendor chain — requests are NOT silently
