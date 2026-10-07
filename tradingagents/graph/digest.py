@@ -2,7 +2,7 @@
 
 The pipeline's transcripts are the product of record, but they are thousands
 of words each — far too long to read on the report page. After the graph
-finishes, ``generate_report_digest`` makes a single quick-model call that
+finishes, ``generate_report_digest`` makes a single deep-model call that
 distills the run into the curated layer the report page and PDF render:
 thesis lines, evidence bullets, the ruling, risk stances, conviction, and
 exit triggers (see ``ReportDigest`` in ``agents/schemas.py``).
@@ -140,7 +140,7 @@ def build_digest_prompt(final_state: dict, computed_context: str | None = None) 
 
 
 def generate_report_digest(
-    quick_llm: Any,
+    llm: Any,
     final_state: dict,
     callbacks: list | None = None,
     computed_context: str | None = None,
@@ -156,7 +156,7 @@ def generate_report_digest(
     output or the call fails; the digest is optional and must not take a
     finished run down with it.
     """
-    structured_llm = bind_structured(quick_llm, ReportDigest, "Report digest")
+    structured_llm = bind_structured(llm, ReportDigest, "Report digest")
     if structured_llm is None:
         return None
     try:

@@ -552,11 +552,13 @@ class TradingAgentsGraph:
         # on any failure rather than taking the finished run down.
         if self.config.get("report_digest", True):
             # Price facts computed in code from this run's own prices anchor
-            # the digest's numbers (REPORT_QUALITY_PLAN R0).
+            # the digest's numbers (REPORT_QUALITY_PLAN R0). The digest is the
+            # published summary, so it runs on the deep model: the quick
+            # model followed its rules loosely (GOOGL staging run, 2026-10-07).
             from tradingagents.quality.technicals import computed_context
 
             final_state["report_digest"] = generate_report_digest(
-                self.quick_thinking_llm,
+                self.deep_thinking_llm,
                 final_state,
                 callbacks=callbacks,
                 computed_context=computed_context(
