@@ -551,8 +551,17 @@ class TradingAgentsGraph:
         # decoration on the quick model — generate_report_digest returns None
         # on any failure rather than taking the finished run down.
         if self.config.get("report_digest", True):
+            # Price facts computed in code from this run's own prices anchor
+            # the digest's numbers (REPORT_QUALITY_PLAN R0).
+            from tradingagents.quality.technicals import computed_context
+
             final_state["report_digest"] = generate_report_digest(
-                self.quick_thinking_llm, final_state, callbacks=callbacks
+                self.quick_thinking_llm,
+                final_state,
+                callbacks=callbacks,
+                computed_context=computed_context(
+                    final_state.get("company_of_interest") or company_name, str(trade_date)
+                ),
             )
 
         # Log state to disk.

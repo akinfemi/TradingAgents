@@ -107,12 +107,28 @@ def build_digest_prompt(final_state: dict, computed_context: str | None = None) 
         "it is currently above.",
         "- In risk-lens stances use descriptive phrasing ('favors staged "
         "entry'), not imperative advice ('demand proof before committing').",
+        # Review findings (ONDS, 2026-10-05): indicator directions and gaps
+        # were repeated wrongly from the transcripts; internal agent names
+        # and chat-style sign-offs leaked into a published note.
+        "- Indicator readings (moving-average gaps, MACD direction and "
+        "crossovers, RSI, 52-week position) come ONLY from the computed "
+        "figures when they are given. If a transcript says 'bearish cross' "
+        "while the computed figures say MACD is above its signal, the "
+        "computed figures win.",
+        "- Never name the pipeline's internal roles ('the aggressive "
+        "analyst', 'the conservative and neutral analysts', 'the bull "
+        "researcher') outside the bull/bear and risk-lens fields. Say what "
+        "the argument is, not which agent made it.",
+        "- No emoji, no rhetorical questions, no sign-offs ('Will the bull "
+        "respond?'). Plain declarative sentences.",
+        "- Each exit-trigger detail is one sentence of at most 200 "
+        "characters; never end a field mid-thought.",
         "",
     ]
     if computed_context:
         parts.append(
-            "## Computed figures (authoritative — derived from structured "
-            "vendor data, not model text)\n\n"
+            "## Computed figures (authoritative — computed in code from "
+            "this run's own price data, not model text)\n\n"
             "When the source text disagrees with these figures, THESE are "
             "correct: quote these and do not repeat the contradicted number.\n\n"
             f"{computed_context}\n"

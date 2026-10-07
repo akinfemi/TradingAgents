@@ -433,16 +433,20 @@ class ReportDigest(BaseModel):
         ge=0,
         le=100,
         description=(
-            "Conviction behind the final rating, 0-100. Calibrate from the "
-            "language of the ruling and final decision: a decisive sweep with "
-            "aligned analysts is 80+, a narrow win with real concerns 55-75, "
-            "a coin-flip 40-55."
+            "Debate margin, 0-100: how decisively the evidence in the bull/"
+            "bear debate favoured the final rating. 0 is evenly split, 100 "
+            "one-sided. It measures the strength of the argument, NOT the "
+            "probability the call is right and NOT the writers' confidence. "
+            "A decisive win on verified evidence with aligned reviews is "
+            "80+, a narrow win with real open concerns 55-75, a near-even "
+            "split 40-55. (Shown to readers as 'Debate margin'; the field "
+            "keeps its old name.)"
         ),
     )
     conviction_note: str = Field(
         description=(
-            "One short clause (under 10 words) explaining the conviction "
-            "level, e.g. 'Measured -- bull won the debate, not decisively'. "
+            "One short clause (under 10 words) explaining the debate margin, "
+            "e.g. 'Measured -- bull won the debate, not decisively'. "
             "Rendered beside a meter; it must stay short."
         ),
     )
@@ -473,7 +477,8 @@ class ReportDigest(BaseModel):
         description=(
             "The 3-4 conditions under which the decision says to exit, trim, "
             "or reverse — the watchlist this report leaves behind. Each title "
-            "names the trigger, each detail says what observable change fires it."
+            "names the trigger, each detail says what observable change fires "
+            "it, in one sentence of at most 200 characters."
         ),
     )
 
