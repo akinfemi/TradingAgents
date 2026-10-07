@@ -1,0 +1,288 @@
+{
+ "label": "r2-2",
+ "judge_run": 1,
+ "date": "2026-10-07",
+ "settings": {
+  "env": {
+   "LLM_PROVIDER": "anthropic",
+   "DEEP_THINK_LLM": "claude-sonnet-5",
+   "QUICK_THINK_LLM": "claude-haiku-4-5",
+   "PRICE_VENDOR": "tiingo"
+  },
+  "config": {
+   "llm_provider": "anthropic",
+   "deep_think_llm": "claude-sonnet-5",
+   "quick_think_llm": "claude-haiku-4-5",
+   "price_vendor": "tiingo",
+   "max_debate_rounds": 1,
+   "max_risk_discuss_rounds": 1
+  },
+  "trade_date": "2026-10-05"
+ },
+ "judge_model": "claude-opus-5-5",
+ "reports": 12,
+ "mean_scores": {
+  "arithmetic": 1.83,
+  "misread": 1.5,
+  "consistency": 1.92,
+  "context": 2.08,
+  "unsupported": 1.5,
+  "reasoning": 1.67,
+  "presentation": 2.17
+ },
+ "mean_score": 1.81,
+ "load_bearing_errors": 111,
+ "reports_with_load_bearing_errors": 12,
+ "verdicts": {
+  "publish": 0,
+  "publish_with_fixes": 0,
+  "do_not_publish": 12
+ },
+ "pipeline_cost_usd": 6.52,
+ "pipeline_cost_per_report_usd": 0.543,
+ "judge_cost_usd": 5.88,
+ "median_seconds": 401,
+ "judge_failed": [],
+ "rows": [
+  {
+   "ticker": "COST",
+   "rating": "Hold",
+   "scores": {
+    "arithmetic": 3,
+    "misread": 1,
+    "consistency": 2,
+    "context": 2,
+    "unsupported": 2,
+    "reasoning": 2,
+    "presentation": 2
+   },
+   "mean_score": 2.0,
+   "load_bearing_errors": 7,
+   "minor_errors": 20,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5069,
+   "seconds": 352,
+   "summary": "The Hold call is defensible, and the price-level facts in the digest market excerpt are correct. However, the bull points contain a reversed margin trend, a misattributed cash growth rate and untraceable 2008-2009 figures. The action plan contradicts itself on adding and cutting levels, treats an already-completed MACD crossover as a future trigger, sets a target with no derivation, and miscasts Costco's sector and disclosure cadence."
+  },
+  {
+   "ticker": "F",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 1,
+    "misread": 1,
+    "consistency": 2,
+    "context": 3,
+    "unsupported": 1,
+    "reasoning": 2,
+    "presentation": 2
+   },
+   "mean_score": 1.71,
+   "load_bearing_errors": 9,
+   "minor_errors": 17,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5592,
+   "seconds": 466,
+   "summary": "The report's rating thesis rests on invented figures and misread data: a fabricated 1.9x interest coverage, invented peer leverage, a 'compressed' 14% margin with no trend data, and mislabeled periods for cash flow and YoY revenue. The ruling also credits a garbled valuation rebuttal. Price-derived claims in the technical section are frequently wrong (10 EMA support vs resistance, 1.28% vs 11.4% gap to the 50 SMA, a 12.9% vs 16.9% drawdown), and the final plan confuses trimming a long position with holding a short."
+  },
+  {
+   "ticker": "JPM",
+   "rating": "Hold",
+   "scores": {
+    "arithmetic": 2,
+    "misread": 2,
+    "consistency": 2,
+    "context": 1,
+    "unsupported": 2,
+    "reasoning": 2,
+    "presentation": 2
+   },
+   "mean_score": 1.86,
+   "load_bearing_errors": 11,
+   "minor_errors": 14,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5086,
+   "seconds": 354,
+   "summary": "The price-derived levels largely match ground truth, but the report anchors its decision gate on the wrong earnings event, understates the EPS run-rate it criticises, and sets a bullish exit trigger that implies an earnings decline. The ruling also relies on unsupported provision data and misattributed or arithmetically broken analyst arguments, and the text is marred by emoji, agent names and chat sign-offs."
+  },
+  {
+   "ticker": "MRNA",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 2,
+    "misread": 1,
+    "consistency": 1,
+    "context": 2,
+    "unsupported": 2,
+    "reasoning": 1,
+    "presentation": 2
+   },
+   "mean_score": 1.57,
+   "load_bearing_errors": 8,
+   "minor_errors": 20,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5307,
+   "seconds": 382,
+   "summary": "The bearish cash-runway thesis is directionally sound, but the publication carries an Underweight rating with a price target above the current price. It also has conflicting stops ($220.98 vs $180) and sizing, an exit trigger based on a MACD crossover that already occurred on Oct 2, and net losses misread as cash burn in the ruling. Numerous arithmetic slips, invented comparables, and context errors (an RSV vaccine already approved, Vaxcyte misread as an RSV rival, Q3 data before it was reported) mean it needs substantial rework before release."
+  },
+  {
+   "ticker": "MSFT",
+   "rating": "Overweight",
+   "scores": {
+    "arithmetic": 3,
+    "misread": 2,
+    "consistency": 2,
+    "context": 2,
+    "unsupported": 2,
+    "reasoning": 2,
+    "presentation": 3
+   },
+   "mean_score": 2.29,
+   "load_bearing_errors": 8,
+   "minor_errors": 20,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5105,
+   "seconds": 358,
+   "summary": "The headline fundamentals and price-derived figures (moving-average gaps, MACD, RSI, margins, FCF) largely check out, but the final stop is justified as 'below the 200 SMA' when it sits $33 above it. The exit triggers contradict that stop, the $560 target is underived and offers worse reward than risk, and 'debt-to-equity' is really total liabilities to equity. Unavailable Q1 FY2027 results and invented Azure/Copilot guidance also feed the debate, and internal agent names leak into reader-facing text, so the report needs substantive rework before publication."
+  },
+  {
+   "ticker": "NOW",
+   "rating": "Hold",
+   "scores": {
+    "arithmetic": 1,
+    "misread": 1,
+    "consistency": 2,
+    "context": 2,
+    "unsupported": 1,
+    "reasoning": 2,
+    "presentation": 2
+   },
+   "mean_score": 1.57,
+   "load_bearing_errors": 8,
+   "minor_errors": 15,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5713,
+   "seconds": 412,
+   "summary": "The digest carries load-bearing errors: a wrong 3.8-point deceleration, a bull valuation built on a market cap understated about 3x (implying a 10% FCF yield versus about 3% actual), non-current liabilities passed off as debt, and a contradictory MACD peak/crossover date. The ruling's tiebreaker rests on treating a sentiment-data outage and fabricated yields as evidence that concerns are priced in. Many underlying fundamental calculations are correct, but the valuation layer and several technical readings are unreliable, and the price target is a Bollinger band rather than a derived value."
+  },
+  {
+   "ticker": "NVDA",
+   "rating": "Overweight",
+   "scores": {
+    "arithmetic": 1,
+    "misread": 2,
+    "consistency": 2,
+    "context": 2,
+    "unsupported": 1,
+    "reasoning": 1,
+    "presentation": 2
+   },
+   "mean_score": 1.57,
+   "load_bearing_errors": 12,
+   "minor_errors": 19,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5119,
+   "seconds": 362,
+   "summary": "The price-derived facts in the digest are mostly right, but several load-bearing pieces are wrong. The price target rests on a miscomputed Bollinger projection. The thesis cites a ~40% FCF yield that is really ~1.6%. The gross-margin exit trigger uses a stale annual figure that the latest quarter (75%) contradicts. Fiscal periods are mislabeled throughout, and the entry plan contradicts its own stop and pause triggers, so the report needs substantive rework before publication."
+  },
+  {
+   "ticker": "O",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 2,
+    "misread": 2,
+    "consistency": 2,
+    "context": 3,
+    "unsupported": 1,
+    "reasoning": 1,
+    "presentation": 3
+   },
+   "mean_score": 2.0,
+   "load_bearing_errors": 11,
+   "minor_errors": 21,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5782,
+   "seconds": 407,
+   "summary": "The price-derived facts are mostly right, but the Underweight call rests on an unsupported claim of equity issuance at 52-week lows, an invented NOI-accretion argument and single-post social media data presented as fact. It also carries a price target 11.5% above the current price that contradicts the rating. Several arithmetic, attribution and concept errors (FCF, debt-to-equity, the 'bear/conservative' alignment) further undermine the digest and need correction before publication."
+  },
+  {
+   "ticker": "ON",
+   "rating": "Hold",
+   "scores": {
+    "arithmetic": 2,
+    "misread": 2,
+    "consistency": 2,
+    "context": 2,
+    "unsupported": 1,
+    "reasoning": 1,
+    "presentation": 2
+   },
+   "mean_score": 1.71,
+   "load_bearing_errors": 9,
+   "minor_errors": 17,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.6055,
+   "seconds": 412,
+   "summary": "The digest has several load-bearing problems. Its price target is lifted from Stifel and sits 7% below spot on a Hold, the ruling rests on an invented interest-expense estimate, and the exit triggers presume an undocumented dividend and an invented 'normalized' OCF. FCF and 2015-16 revenue figures also conflict across sections. Underlying sections compound this with wrong MA gaps, a misdated and misexplained MACD crossover, a market cap off by a factor of four, and stale FY2025 data presented as current in October 2026."
+  },
+  {
+   "ticker": "ONDS",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 1,
+    "misread": 1,
+    "consistency": 2,
+    "context": 2,
+    "unsupported": 1,
+    "reasoning": 2,
+    "presentation": 2
+   },
+   "mean_score": 1.57,
+   "load_bearing_errors": 9,
+   "minor_errors": 18,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.6958,
+   "seconds": 517,
+   "summary": "The Underweight direction is defensible, and the digest's price-derived facts (MACD crossover, 7.1% and 21.4% SMA gaps, 47% off the high) are mostly right. However, the key bear points and the ruling rest on wrong arithmetic (353% OpEx/gross profit, an 18-24 month runway that the stated burn does not produce), annual-versus-quarterly and H1-versus-quarter mismatches, an ex-ESAD growth figure built on revenue the order could not yet have generated, and an OpEx model built on invented figures. The $6.80 price target has no valuation basis and coincides with the exit trigger."
+  },
+  {
+   "ticker": "TSM",
+   "rating": "Hold",
+   "scores": {
+    "arithmetic": 3,
+    "misread": 2,
+    "consistency": 2,
+    "context": 2,
+    "unsupported": 2,
+    "reasoning": 2,
+    "presentation": 2
+   },
+   "mean_score": 2.14,
+   "load_bearing_errors": 10,
+   "minor_errors": 12,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.4614,
+   "seconds": 401,
+   "summary": "The price-derived figures (MA gaps, RSI, MACD, Bollinger levels) are mostly correct. However, the report reverses the moving-average ordering in its rating rationale, asserts an undated 'fresh' Golden Cross, miscounts the rally period, ignores the 52-week high and the upcoming earnings event, and sets an add ladder that sits below its own hard stop. Unsupported debate claims and chat-style presentation compound these load-bearing errors, so it is not publishable without substantial revision."
+  },
+  {
+   "ticker": "XOM",
+   "rating": "Hold",
+   "scores": {
+    "arithmetic": 1,
+    "misread": 1,
+    "consistency": 2,
+    "context": 2,
+    "unsupported": 2,
+    "reasoning": 2,
+    "presentation": 2
+   },
+   "mean_score": 1.71,
+   "load_bearing_errors": 9,
+   "minor_errors": 24,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.481,
+   "seconds": 360,
+   "summary": "The price-derived figures in the digest match the computed facts, but the report carries load-bearing errors. These include a wrong H1 2026 net margin, total liabilities mislabeled as debt, a 10x P/E that is really about 24x, a tenfold overstatement of the unemployment rise, and a bearish MACD crossover presented as fresh when it is three weeks old. The ruling credits flawed arithmetic, proposes a covered call that contradicts its own breakout trigger, ignores the Q3 earnings release inside its horizon, and the debate sections are padded with invented figures and chat-style presentation."
+  }
+ ]
+}

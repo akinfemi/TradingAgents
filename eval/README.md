@@ -25,6 +25,23 @@ uv run python ../TradingAgents/eval/judge.py --label baseline --env ../.env.stag
   (git-ignored). The summary, scores and cost go to
   `results/<date>-<label>.json` (committed).
 
+## How to compare two versions (noise measured 2026-10-07)
+
+One run judged once is not enough. On the same 12 reports re-judged, a
+report's mean score moved about 0.24 and its load-bearing error count about
+1.7. Between two runs of the same code they moved about 0.3 and 2.2, and the
+rating itself flipped on 3-4 of 12 tickers. So for every comparison:
+
+1. **Run each version twice** (`--label X` and `--label X-2`) and judge both.
+2. **Decide on load-bearing errors,** averaged over the runs. A difference
+   counts when the ranges don't overlap and most tickers move the same way.
+   Mean score is reported but too noisy to decide on (about ±0.1 at set
+   level).
+3. **Report rating stability:** how many tickers changed rating between the
+   two runs of the same version.
+
+`judge.py --judge-run 2` re-judges the same reports to measure judge noise.
+
 ## What it measures
 
 Per report: the judge's 0–5 score on each of the seven error classes, its

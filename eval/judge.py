@@ -131,7 +131,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--label", required=True)
     parser.add_argument("--env", help="env file with ANTHROPIC_API_KEY")
+    parser.add_argument(
+        "--judge-run", type=int, default=1,
+        help="judge the same reports again under a new number, to measure judge noise",
+    )
     args = parser.parse_args()
+    suffix = "" if args.judge_run == 1 else f"-{args.judge_run}"
     load_env(args.env)
 
     import anthropic
@@ -144,7 +149,7 @@ def main() -> int:
     rows, judge_cost, pipeline_cost, failed = [], 0.0, 0.0, []
     for run_file in sorted(label_dir.glob("*/run.json")):
         run = json.loads(run_file.read_text(encoding="utf-8"))
-        out = run_file.parent / "judgement.json"
+        out = run_file.parent / f"judgement{suffix}.json"
         if out.is_file():
             saved = json.loads(out.read_text(encoding="utf-8"))
         else:
@@ -182,6 +187,7 @@ def main() -> int:
     n = len(rows)
     summary = {
         "label": args.label,
+        "judge_run": args.judge_run,
         "date": dt.date.today().isoformat(),
         "settings": json.loads((label_dir / "settings.json").read_text(encoding="utf-8")),
         "judge_model": JUDGE_MODEL,
@@ -199,7 +205,7 @@ def main() -> int:
         "rows": rows,
     }
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out = RESULTS_DIR / f"{summary['date']}-{args.label}.json"
+    out = RESULTS_DIR / f"{summary['date']}-{args.label}{suffix and '-judge' + suffix}.json"
     out.write_text(json.dumps(summary, indent=1), encoding="utf-8")
     print(f"\n{out.relative_to(EVAL_DIR)}: mean {summary['mean_score']}/5, "
           f"{summary['load_bearing_errors']} load-bearing errors in "

@@ -1,0 +1,288 @@
+{
+ "label": "r2",
+ "judge_run": 2,
+ "date": "2026-10-07",
+ "settings": {
+  "env": {
+   "LLM_PROVIDER": "anthropic",
+   "DEEP_THINK_LLM": "claude-sonnet-5",
+   "QUICK_THINK_LLM": "claude-haiku-4-5",
+   "PRICE_VENDOR": "tiingo"
+  },
+  "config": {
+   "llm_provider": "anthropic",
+   "deep_think_llm": "claude-sonnet-5",
+   "quick_think_llm": "claude-haiku-4-5",
+   "price_vendor": "tiingo",
+   "max_debate_rounds": 1,
+   "max_risk_discuss_rounds": 1
+  },
+  "trade_date": "2026-10-05"
+ },
+ "judge_model": "claude-opus-5-5",
+ "reports": 12,
+ "mean_scores": {
+  "arithmetic": 1.67,
+  "misread": 1.33,
+  "consistency": 1.92,
+  "context": 2.17,
+  "unsupported": 1.75,
+  "reasoning": 1.58,
+  "presentation": 2.25
+ },
+ "mean_score": 1.81,
+ "load_bearing_errors": 105,
+ "reports_with_load_bearing_errors": 12,
+ "verdicts": {
+  "publish": 0,
+  "publish_with_fixes": 0,
+  "do_not_publish": 12
+ },
+ "pipeline_cost_usd": 6.47,
+ "pipeline_cost_per_report_usd": 0.539,
+ "judge_cost_usd": 5.85,
+ "median_seconds": 384,
+ "judge_failed": [],
+ "rows": [
+  {
+   "ticker": "COST",
+   "rating": "Hold",
+   "scores": {
+    "arithmetic": 1,
+    "misread": 1,
+    "consistency": 2,
+    "context": 1,
+    "unsupported": 1,
+    "reasoning": 1,
+    "presentation": 3
+   },
+   "mean_score": 1.43,
+   "load_bearing_errors": 11,
+   "minor_errors": 16,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5109,
+   "seconds": 363,
+   "summary": "The report mislabels the already-completed 25 September MACD bullish crossover as a pending upgrade trigger, so its adopted two-of-three add rule is already satisfied while the call says add nothing. Its core valuation and growth figures (9.3% revenue CAGR, 5.3x PEG, '51x forward', ~20% compression downside) are miscomputed or mislabelled. It also misclassifies Costco as Consumer Discretionary, names a wrong next earnings event, ignores the stock sitting 15.5% below its 52-week high, and leans on fabricated sector and membership figures, so it is not fit for publication.."
+  },
+  {
+   "ticker": "F",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 1,
+    "misread": 1,
+    "consistency": 1,
+    "context": 2,
+    "unsupported": 2,
+    "reasoning": 1,
+    "presentation": 1
+   },
+   "mean_score": 1.29,
+   "load_bearing_errors": 10,
+   "minor_errors": 17,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5572,
+   "seconds": 389,
+   "summary": "The Underweight ruling rests on a bear EPS calculation that applies net margin to gross profit ($0.27) and on comparing a quarterly EPS of $0.63 with an annual target, both of which are wrong. RSI 33 is misread as oversold, MACD convergence is misdescribed as widening, the fundamentals are a quarter stale with duplicated balance-sheet data, the price target is underived, and the digest is missing."
+  },
+  {
+   "ticker": "JPM",
+   "rating": "Hold",
+   "scores": {
+    "arithmetic": 2,
+    "misread": 1,
+    "consistency": 3,
+    "context": 2,
+    "unsupported": 2,
+    "reasoning": 1,
+    "presentation": 2
+   },
+   "mean_score": 1.86,
+   "load_bearing_errors": 5,
+   "minor_errors": 18,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.542,
+   "seconds": 376,
+   "summary": "The Hold ruling rests on a valuation argument that divides quarterly normalized EPS into price as if annual, turning ~12x into '47-51x'. The bear case attributes Q2 earnings to a September volatility spike and wrongly places price below the 200-day SMA. A sub-ATR stop, invented deposit-cost and peer-multiple figures, and numerous arithmetic slips leave the report unfit for publication without substantial rework."
+  },
+  {
+   "ticker": "MRNA",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 2,
+    "misread": 1,
+    "consistency": 2,
+    "context": 2,
+    "unsupported": 2,
+    "reasoning": 1,
+    "presentation": 2
+   },
+   "mean_score": 1.71,
+   "load_bearing_errors": 11,
+   "minor_errors": 17,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5702,
+   "seconds": 417,
+   "summary": "The report's core bearish case rests on misread inputs. It treats an operating loss as operating cash flow, computes runway on cash alone despite large investment holdings, presents an already-occurred MACD bearish crossover as a future exit trigger, and calls a seasonal, YoY-flat revenue line 'shrinking'. Add a $205 price target above the current price on an Underweight call, exit levels mislabeled against the 10-day EMA, and pervasive arithmetic and attribution slips, and it is not fit for publication."
+  },
+  {
+   "ticker": "MSFT",
+   "rating": "Hold",
+   "scores": {
+    "arithmetic": 1,
+    "misread": 2,
+    "consistency": 2,
+    "context": 2,
+    "unsupported": 2,
+    "reasoning": 2,
+    "presentation": 3
+   },
+   "mean_score": 2.0,
+   "load_bearing_errors": 6,
+   "minor_errors": 13,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5089,
+   "seconds": 347,
+   "summary": "The price-derived technicals are mostly accurate, but the report misstates capex intensity (34.9% of revenue, not 9.2%), gets the FCF decline wrong, misreads a freshly bullish MACD histogram as compressing, and treats unreported Q1 FY2027 results as in hand. The ruling rests on invented scenario probabilities, a 'second straight year' of margin compression that its own data contradicts, and an entry style that conflicts with the no-new-money decision, so it is not fit to publish."
+  },
+  {
+   "ticker": "NOW",
+   "rating": "Hold",
+   "scores": {
+    "arithmetic": 1,
+    "misread": 1,
+    "consistency": 2,
+    "context": 2,
+    "unsupported": 1,
+    "reasoning": 2,
+    "presentation": 2
+   },
+   "mean_score": 1.57,
+   "load_bearing_errors": 10,
+   "minor_errors": 15,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5534,
+   "seconds": 385,
+   "summary": "The headline Hold is reasonable, but the supporting case rests on a share-count error that inflates the FCF yield 8x, an invented 26x forward P/E, fabricated peer comparables, and a misread MACD figure turned into a nonsensical '86% collapse' that the ruling repeats. Price-level facts are mostly right in the digest, but the cross-section inconsistencies, the mid-cap mislabel, the ignored 52-week high, and agent-name/emoji presentation mean it needs substantial rework before publication."
+  },
+  {
+   "ticker": "NVDA",
+   "rating": "Overweight",
+   "scores": {
+    "arithmetic": 1,
+    "misread": 1,
+    "consistency": 2,
+    "context": 3,
+    "unsupported": 2,
+    "reasoning": 2,
+    "presentation": 2
+   },
+   "mean_score": 1.86,
+   "load_bearing_errors": 14,
+   "minor_errors": 11,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.6007,
+   "seconds": 447,
+   "summary": "The price-derived technicals are mostly accurate against the computed facts. However, the report's core fundamentals are misread: cumulative or trailing OCF is presented as quarterly, sequential growth as YoY, and liabilities/equity as D/E. Valuation and scenario math is broken (a 1.8x P/E, conflicting market caps, an inflated +19% expected value), the $265 target is underived, and the stop coincides with the add level, so the Overweight call is not publishable as written."
+  },
+  {
+   "ticker": "O",
+   "rating": "Hold",
+   "scores": {
+    "arithmetic": 2,
+    "misread": 1,
+    "consistency": 2,
+    "context": 2,
+    "unsupported": 2,
+    "reasoning": 2,
+    "presentation": 2
+   },
+   "mean_score": 1.86,
+   "load_bearing_errors": 10,
+   "minor_errors": 29,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5424,
+   "seconds": 370,
+   "summary": "The technical figures match the computed price facts, but the fundamental core does not hold. The 1.35x dividend coverage rests on an invented ~400M share count that the report's own EPS data contradicts (implying coverage below 1x), and the $7.6B investing figure likely double-counts YTD cash flows. Mislabelled 'debt-to-equity', a three-quarter decline called quarterly, an inaccurate qualified-dividend claim, and a miscalculated expected-value synthesis feed directly into the ruling, bull/bear points and exit triggers, alongside many minor arithmetic slips and agent-name leaks."
+  },
+  {
+   "ticker": "ON",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 3,
+    "misread": 2,
+    "consistency": 2,
+    "context": 3,
+    "unsupported": 2,
+    "reasoning": 2,
+    "presentation": 3
+   },
+   "mean_score": 2.43,
+   "load_bearing_errors": 5,
+   "minor_errors": 19,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5124,
+   "seconds": 338,
+   "summary": "Most price facts and the core fundamental arithmetic reconcile, but the report rests on a mislabelled 'debt-to-equity' (actually liabilities-to-equity) and an invented $120 rival bid in a key point. It also has a price target borrowed from Stifel without derivation and conflicting stop levels, one inside a single ATR. Numerous secondary slips undermine confidence: the 7.1% vs 9.0% EMA gap, '10-15% upside' to an $80 target, inconsistent decline percentages, a weekend close date, and a self-contradictory Synaptics narrative."
+  },
+  {
+   "ticker": "ONDS",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 1,
+    "misread": 2,
+    "consistency": 1,
+    "context": 2,
+    "unsupported": 1,
+    "reasoning": 1,
+    "presentation": 2
+   },
+   "mean_score": 1.43,
+   "load_bearing_errors": 6,
+   "minor_errors": 14,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.6134,
+   "seconds": 432,
+   "summary": "The ruling rests on a miscomputed opex-to-gross-profit ratio (5.5x, not 2.4x) and an inconsistent capital-raised figure ($1.8B vs $2.8B). It also treats a post-quarter $56M order as 67% of Q2 revenue, while runway is stated three different ways across sections. The trade plan is structurally unsound: the price target is just the stop level, the stop sits on the wrong side for a short and inside one ATR, and the technical section misreads the MACD crossover and the price-versus-EMA relationship.)"
+  },
+  {
+   "ticker": "TSM",
+   "rating": "Hold",
+   "scores": {
+    "arithmetic": 3,
+    "misread": 2,
+    "consistency": 3,
+    "context": 2,
+    "unsupported": 2,
+    "reasoning": 2,
+    "presentation": 3
+   },
+   "mean_score": 2.43,
+   "load_bearing_errors": 7,
+   "minor_errors": 16,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.4319,
+   "seconds": 335,
+   "summary": "The headline price facts (moving averages, RSI, MACD, 52-week high) are correctly stated. However, the report carries load-bearing problems: an underived $480 target below spot on a Hold, invented fundamentals (backlog through 2027, FCF yield) used in the bull and bear key points, a quarterly GDP figure misread as annual, and no mention of the mid-October earnings release inside its own review window. Numerous secondary slips in the technical section (a mislabeled 200-day SMA, a stop described as below the 10-day EMA when it is above, wrong RSI arithmetic, an inconsistent 200-day gap) and internal agent names in reader-facing text add to the case against publication."
+  },
+  {
+   "ticker": "XOM",
+   "rating": "Hold",
+   "scores": {
+    "arithmetic": 2,
+    "misread": 1,
+    "consistency": 1,
+    "context": 3,
+    "unsupported": 2,
+    "reasoning": 2,
+    "presentation": 2
+   },
+   "mean_score": 1.86,
+   "load_bearing_errors": 10,
+   "minor_errors": 17,
+   "verdict": "do_not_publish",
+   "pipeline_cost_usd": 0.5293,
+   "seconds": 384,
+   "summary": "The report gets the basic moving-average, RSI and 52-week figures right. But its decision rests on a misread MACD (claiming no bearish crossover when one occurred on 2026-09-16), an invented market cap and FCF yield that conflict across sections, and an inverted cash-flow-versus-revenue claim in a bull key point. The ruling's dividend-carry tie-break is unsupported and logically flawed, and an exit trigger is conditioned on an event that already happened, so it is not fit to publish without substantive rework."
+  }
+ ]
+}
