@@ -1,0 +1,95 @@
+{
+  "note": "Seeded errors for the R5 linter (REPORT_QUALITY_PLAN Appendix A). Every entry must be caught by the linter or the stage gates. 'quote' strings occur verbatim in report.json (sections or digest). Ground truth from the run's own figures and the 10-Q for Q2 2026 (Appendix B).",
+  "errors": [
+    {
+      "id": "macd_direction",
+      "class": "misread",
+      "load_bearing": true,
+      "stage": "market",
+      "quote": "MACD bearish cross",
+      "truth": "MACD -0.169 is above its signal -0.182 (histogram +0.013); last crossover bullish, 2026-09-21",
+      "check": "direction words vs computed MACD state"
+    },
+    {
+      "id": "sma200_gap",
+      "class": "arithmetic",
+      "load_bearing": true,
+      "stage": "market",
+      "quote": "$1.68 below the 200 SMA",
+      "truth": "$9.44 - $7.24 = $2.20 (-23.3%)",
+      "check": "recompute 'X below Y by Z'"
+    },
+    {
+      "id": "sga_quote_fabricated",
+      "class": "unsupported",
+      "load_bearing": true,
+      "stage": "bull_bear",
+      "quote": "SG&A Expenses in Q2 2026: $179.8M",
+      "truth": "Not in the fundamentals report, which said SG&A was 178% of gross profit. $179.8M = gross profit 36.1 + operating loss 143.7 = total opex. The 10-Q has no SG&A line: G&A $128.0M, S&M $20.9M, R&D $31.0M, amortization $18.7M.",
+      "check": "quote provenance + concept guard (SG&A vs total opex)"
+    },
+    {
+      "id": "sga_baseline_invented",
+      "class": "unsupported",
+      "load_bearing": true,
+      "stage": "risk",
+      "quote": "from 2.9x (FY 2025) to 4.98x",
+      "truth": "No FY2025 SG&A/gross-profit figure exists anywhere upstream; compares an annual baseline with a quarterly figure",
+      "check": "number match (unsupported) + period guard"
+    },
+    {
+      "id": "ocf_mislabel",
+      "class": "misread",
+      "load_bearing": true,
+      "stage": "fundamentals",
+      "quote": "negative $372.03M operating cash flow",
+      "truth": "Q2 operating cash flow was -$86.1M; -$372M is the total change in cash. Cash plus short-term investments fell $89.3M ($1,473.8M to $1,384.5M).",
+      "check": "concept guard (OCF vs total cash change; cash vs cash+STI)"
+    },
+    {
+      "id": "q1_cash_misdated",
+      "class": "misread",
+      "load_bearing": false,
+      "stage": "bull_bear",
+      "quote": "Q1 2026 had massive cash outflow: -$372M",
+      "truth": "Q1 2026 cash rose (+$475M to $1,026.0M); the -$372M was Q2",
+      "check": "period guard"
+    },
+    {
+      "id": "fcf_period_mix",
+      "class": "misread",
+      "load_bearing": true,
+      "stage": "digest",
+      "quote": "worse than the -$40.9M baseline in FY2025",
+      "truth": "-$40.9M is FY2025 full-year FCF; compared with Q2 2026 quarterly FCF of -$93.8M",
+      "check": "period guard (quarter vs FY)"
+    },
+    {
+      "id": "no_price_reaction",
+      "class": "context",
+      "load_bearing": true,
+      "stage": "bull_bear",
+      "quote": "Immediate price bounce",
+      "truth": "Report written 06:33 ET Monday 2026-10-05, pre-market; last bar was Friday's close, so the market had not traded on the Oct 5 initiation",
+      "check": "session clock"
+    },
+    {
+      "id": "consensus_invented",
+      "class": "unsupported",
+      "load_bearing": true,
+      "stage": "portfolio",
+      "quote": "converge",
+      "truth": "The aggressive risk review recommended holding the core position and adding on weakness; the three did not converge on reducing",
+      "check": "attribution / quote provenance"
+    },
+    {
+      "id": "agent_names_leaked",
+      "class": "presentation",
+      "load_bearing": false,
+      "stage": "digest",
+      "quote": "aggressive analyst",
+      "truth": "Internal role names must not appear in reader-facing text outside the debate fields",
+      "check": "sanitiser"
+    }
+  ]
+}
