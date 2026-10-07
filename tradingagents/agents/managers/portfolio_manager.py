@@ -14,10 +14,12 @@ from tradingagents.agents.context import (
     get_instrument_context_from_state,
     get_language_instruction,
     get_portfolio_context_from_state,
+    rating_horizon,
 )
 from tradingagents.agents.rating import parse_rating
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
 from tradingagents.agents.structured import NO_EXTERNAL_TOOLS, bind_structured, invoke_structured
+from tradingagents.dataflows.config import get_config
 
 
 def create_portfolio_manager(llm):
@@ -26,6 +28,9 @@ def create_portfolio_manager(llm):
     def portfolio_manager_node(state) -> dict:
         instrument_context = get_instrument_context_from_state(state)
         portfolio_context = get_portfolio_context_from_state(state)
+        benchmark, horizon_days, horizon_words = rating_horizon(
+            str(state["company_of_interest"]), get_config()
+        )
 
         history = state["risk_debate_state"]["history"]
         risk_debate_state = state["risk_debate_state"]
@@ -46,6 +51,8 @@ def create_portfolio_manager(llm):
 {portfolio_context}
 
 ---
+
+**Rating horizon:** rate the instrument's expected performance relative to {benchmark} over the next {horizon_words} ({horizon_days} trading days). The call is graded on exactly that: its return minus {benchmark}'s over the window. A price target, if you give one, is for the end of that window. How to get in or out (over how many sessions, at what levels) is execution timing, not the horizon.
 
 **Rating Scale** (use exactly one):
 - **Buy**: Strong conviction to enter or add to position
@@ -71,6 +78,7 @@ Write these sections, in this order, starting with the rating on its own line:
 
 - **Rating**: exactly one of Buy / Overweight / Hold / Underweight / Sell
 - **Executive Summary**: the call and how to act on it
+- **Execution Timing**: how to enter or exit, e.g. "build over 3-5 sessions"
 - **Investment Thesis**: the evidence that decided it, and what would change it
 
 {NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
@@ -79,7 +87,9 @@ Write these sections, in this order, starting with the rating on its own line:
         # Read back from text, a rating the thesis quotes could replace it.
         decision = invoke_structured(structured_llm, prompt, "Portfolio Manager")
         if decision is not None:
-            final_trade_decision = render_pm_decision(decision)
+            final_trade_decision = render_pm_decision(
+                decision, f"{horizon_words} ({horizon_days} trading days) vs {benchmark}"
+            )
             final_rating = decision.rating.value
         else:
             final_trade_decision = llm.invoke(prompt).content

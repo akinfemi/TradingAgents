@@ -545,3 +545,30 @@ def test_the_trader_names_the_levels_it_did_not_give():
     for field in ("Entry Price", "Stop Loss", "Position Sizing"):
         assert field in rendered
     assert rendered.lower().count("not provided") == 3
+
+
+@pytest.mark.unit
+def test_the_decision_names_the_window_it_is_graded_on():
+    """REPORT_QUALITY_PLAN R3: the rating horizon is fixed, named in the
+    rendered decision, and kept apart from how to enter or exit."""
+    from tradingagents.agents.schemas import PortfolioDecision, PortfolioRating, render_pm_decision
+
+    rendered = render_pm_decision(
+        PortfolioDecision(rating=PortfolioRating.BUY, executive_summary="s", investment_thesis="t",
+                          execution_timing="build over 3-5 sessions"),
+        "3 months (63 trading days) vs SPY",
+    )
+    assert "**Rating Horizon**: 3 months (63 trading days) vs SPY" in rendered
+    assert "**Execution Timing**: build over 3-5 sessions" in rendered
+    assert "Time Horizon" not in rendered
+
+
+@pytest.mark.unit
+def test_rating_horizon_follows_the_holding_period_and_the_benchmark():
+    from tradingagents.agents.context import rating_horizon
+    from tradingagents.default_config import DEFAULT_CONFIG
+
+    config = {**DEFAULT_CONFIG, "holding_period_days": 63}
+    assert rating_horizon("NVDA", config) == ("SPY", 63, "3 months")
+    assert rating_horizon("7203.T", config)[0] == "^N225"
+    assert rating_horizon("NVDA", {**DEFAULT_CONFIG, "holding_period_days": 5})[2] == "5 trading days"

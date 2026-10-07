@@ -216,3 +216,15 @@ def get_portfolio_context_from_state(state: Mapping[str, Any]) -> str:
         "holdings or cash, so do not assume a flat book; give direction and "
         "sizing guidance in terms the caller can apply to their own position."
     )
+
+
+def rating_horizon(ticker: str, config: Mapping[str, Any]) -> tuple[str, int, str]:
+    """(benchmark, trading days, words) the call is rated over: the window the
+    decision is later graded on, so the prompt and the grade cannot disagree.
+    63 trading days reads "3 months"; other lengths read in trading days."""
+    from tradingagents.memory.settlement import resolve_benchmark
+
+    days = int(config.get("holding_period_days") or 5)
+    benchmark = resolve_benchmark(ticker, dict(config))
+    words = f"{round(days / 21)} months" if days >= 42 and days % 21 == 0 else f"{days} trading days"
+    return benchmark, days, words

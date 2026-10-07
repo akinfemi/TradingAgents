@@ -790,7 +790,9 @@ class TestPortfolioManagerInjection:
         assert "**Executive Summary**: Build position gradually" in md
         assert "**Investment Thesis**: AI capex cycle" in md
         assert "**Price Target**: 215.0" in md
-        assert "**Time Horizon**: 3-6 months" in md
+        assert "**Time Horizon**: 3-6 months" in md  # a legacy value still renders
+        assert "**Rating Horizon**: " in md and "trading days) vs SPY" in md
+        assert "relative to SPY over the next" in captured["prompt"]
 
     def test_pm_falls_back_to_freetext_when_structured_unavailable(self):
         """If a provider does not support with_structured_output, the agent

@@ -239,8 +239,9 @@ class PortfolioDecision(BaseModel):
     )
     executive_summary: str = Field(
         description=(
-            "A concise action plan covering entry strategy, position sizing, "
-            "key risk levels, and time horizon. Two to four sentences."
+            "A concise action plan covering entry strategy, position sizing "
+            "and key risk levels, over the rating horizon given in the prompt. "
+            "Two to four sentences."
         ),
     )
     investment_thesis: str = Field(
@@ -252,11 +253,23 @@ class PortfolioDecision(BaseModel):
     )
     price_target: float | None = Field(
         default=None,
-        description="Optional target price in the instrument's quote currency.",
+        description=(
+            "Optional target price in the instrument's quote currency, for the "
+            "end of the rating horizon given in the prompt."
+        ),
+    )
+    execution_timing: str | None = Field(
+        default=None,
+        description=(
+            "How to enter or exit the position, e.g. 'build over 3-5 sessions' "
+            "or 'trim on strength over the next week'. Not the rating horizon."
+        ),
     )
     time_horizon: str | None = Field(
         default=None,
-        description="Optional recommended holding period, e.g. '3-6 months'.",
+        description=(
+            "Legacy; leave empty. The rating horizon is fixed by the prompt."
+        ),
     )
 
     @field_validator("price_target", mode="before")
@@ -265,7 +278,7 @@ class PortfolioDecision(BaseModel):
         return _coerce_optional_float(v)
 
 
-def render_pm_decision(decision: PortfolioDecision) -> str:
+def render_pm_decision(decision: PortfolioDecision, rating_horizon: str | None = None) -> str:
     """Render a PortfolioDecision back to the markdown shape the rest of the system expects.
 
     Memory log, CLI display, and saved report files all read this markdown,
@@ -284,7 +297,12 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
     # so a reader cannot tell "no target" from "target not reported".
     target = decision.price_target if decision.price_target is not None else "not provided"
     parts.extend(["", f"**Price Target**: {target}"])
-    parts.extend(["", f"**Time Horizon**: {decision.time_horizon or 'not provided'}"])
+    if rating_horizon:  # the window the call is graded on, e.g. "3 months (63 trading days) vs SPY"
+        parts.extend(["", f"**Rating Horizon**: {rating_horizon}"])
+    if decision.execution_timing:
+        parts.extend(["", f"**Execution Timing**: {decision.execution_timing}"])
+    if decision.time_horizon:  # legacy runs only; new runs rate over the fixed horizon
+        parts.extend(["", f"**Time Horizon**: {decision.time_horizon}"])
     return "\n".join(parts)
 
 
