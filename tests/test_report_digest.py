@@ -114,6 +114,20 @@ class TestGenerateReportDigest:
         llm.with_structured_output.return_value.invoke.side_effect = RuntimeError("boom")
         assert generate_report_digest(llm, _state()) is None
 
+    def test_retries_once_after_a_transient_failure(self):
+        llm = MagicMock()
+        structured = llm.with_structured_output.return_value
+        structured.invoke.side_effect = [RuntimeError("overloaded"), _sample_digest()]
+        out = generate_report_digest(llm, _state())
+        assert out is not None and structured.invoke.call_count == 2
+
+    def test_gives_up_after_two_attempts(self):
+        llm = MagicMock()
+        structured = llm.with_structured_output.return_value
+        structured.invoke.side_effect = RuntimeError("down")
+        assert generate_report_digest(llm, _state()) is None
+        assert structured.invoke.call_count == 2
+
     def test_none_on_null_parse(self):
         llm = MagicMock()
         llm.with_structured_output.return_value.invoke.return_value = None

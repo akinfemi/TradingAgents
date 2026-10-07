@@ -159,14 +159,17 @@ def generate_report_digest(
     structured_llm = bind_structured(llm, ReportDigest, "Report digest")
     if structured_llm is None:
         return None
-    try:
-        config = {"callbacks": callbacks} if callbacks else None
-        result = structured_llm.invoke(
-            build_digest_prompt(final_state, computed_context), config=config
-        )
-        if result is None:
-            raise ValueError("structured output returned no parsed result")
-        return result.model_dump(mode="json")
-    except Exception as exc:  # noqa: BLE001 — decoration only, never fatal
-        logger.warning("Report digest extraction failed (%s); continuing without it", exc)
-        return None
+    config = {"callbacks": callbacks} if callbacks else None
+    prompt = build_digest_prompt(final_state, computed_context)
+    # One retry: a transient failure (a provider blip, a reply without the
+    # structured call) otherwise leaves the report without its summary
+    # (R2 evaluation, F, 2026-10-07).
+    for attempt in (1, 2):
+        try:
+            result = structured_llm.invoke(prompt, config=config)
+            if result is None:
+                raise ValueError("structured output returned no parsed result")
+            return result.model_dump(mode="json")
+        except Exception as exc:  # noqa: BLE001 — decoration only, never fatal
+            logger.warning("Report digest extraction failed (attempt %d: %s)", attempt, exc)
+    return None
