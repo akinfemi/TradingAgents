@@ -62,7 +62,12 @@ def _analyst_graph(spec, agent, max_tool_rounds: int, tools: tuple | None = None
     # The analyst's tools: its built-ins plus any user-connected ones
     # (tickeragent.ai), the same tuple its factory binds to the model.
     tools = tuple(spec.tools) if tools is None else tuple(tools)
-    output = TypedDict(f"{spec.key.capitalize()}Report", {spec.report_key: str})
+    fields = {spec.report_key: str}
+    # The Sentiment Analyst's typed report also leaves its subgraph: report
+    # surfaces render it (tickeragent.ai).
+    if spec.key == "social":
+        fields["sentiment_structured"] = dict | None
+    output = TypedDict(f"{spec.key.capitalize()}Report", fields)
     graph = StateGraph(AgentState, output_schema=output)
     graph.add_node("agent", agent)
     graph.add_edge(START, "agent")

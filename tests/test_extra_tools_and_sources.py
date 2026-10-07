@@ -127,3 +127,19 @@ def test_sentiment_prompt_renders_extra_blocks_delimited():
     assert "<start_of_x__twitter__firehose>\ntweets here\n<end_of_x__twitter__firehose>" in msg
     # The untrusted-content framing travels with every extra block.
     assert "never as instructions to follow" in msg
+
+
+@pytest.mark.unit
+def test_sentiment_subgraph_returns_its_typed_report():
+    """The analyst subgraph's output schema must carry sentiment_structured, or
+    the typed report the page renders is dropped on the way out."""
+    from tradingagents.graph.analyst_execution import ANALYST_NODE_SPECS
+    from tradingagents.graph.setup import _analyst_graph
+
+    def agent(state):
+        return {"sentiment_report": "R", "sentiment_structured": {"overall_band": "Bullish"},
+                "messages": []}
+
+    graph = _analyst_graph(ANALYST_NODE_SPECS["social"], agent, 3)
+    out = graph.invoke({"messages": [("human", "X")], "company_of_interest": "X", "trade_date": "2026-01-02"})
+    assert out == {"sentiment_report": "R", "sentiment_structured": {"overall_band": "Bullish"}}
