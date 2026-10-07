@@ -5,9 +5,11 @@ import pandas as pd
 import yfinance as yf
 
 from tradingagents.dataflows.config import get_config
-from tradingagents.dataflows.errors import NoMarketDataError
+from tradingagents.dataflows.errors import NoMarketDataError, VendorError
 from tradingagents.dataflows.files import replace_file
 from tradingagents.dataflows.symbols import normalize_symbol, safe_ticker_component
+from tradingagents.dataflows.tiingo import fetch_daily as fetch_tiingo_daily
+from tradingagents.dataflows.tiingo import price_vendor, tiingo_symbol
 from tradingagents.dataflows.vendors.yahoo.common import raise_for_empty, yf_retry
 
 logger = logging.getLogger(__name__)
@@ -188,6 +190,30 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
     end_str = (now + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
     os.makedirs(config["data_cache_dir"], exist_ok=True)
+
+    # The licensed price source first when configured (tickeragent.ai); an
+    # instrument Tiingo doesn't list (indices, non-US suffixes) or a failed
+    # request falls back to Yahoo. The vendor is in the cache filename, so
+    # report surfaces know which source produced the prices they show.
+    data = None
+    if price_vendor(config) == "tiingo" and tiingo_symbol(canonical) is not None:
+        tiingo_file = os.path.join(config["data_cache_dir"], f"{safe_symbol}-Tiingo-data.csv")
+        if os.path.exists(tiingo_file):
+            cached = pd.read_csv(tiingo_file, on_bad_lines="skip", encoding="utf-8")
+            if (
+                not cached.empty
+                and "Close" in cached.columns
+                and _cache_is_fresh(tiingo_file, as_of_dt, now)
+            ):
+                data = cached
+        if data is None:
+            try:
+                fetched = fetch_tiingo_daily(canonical, start_str, now.strftime("%Y-%m-%d"))
+                replace_file(tiingo_file, lambda temp: fetched.to_csv(temp, index=False, encoding="utf-8"))
+                data = fetched
+            except VendorError as exc:
+                logger.warning("Tiingo has no prices for %s (%s); using Yahoo", canonical, exc)
+
     data_file = os.path.join(
         config["data_cache_dir"],
         f"{safe_symbol}-YFin-data.csv",
@@ -196,8 +222,7 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
     # A cached file may be empty if a prior fetch failed (unknown symbol,
     # transient rate limit). Treat an empty/columnless cache as a miss and
     # re-fetch rather than serving the poisoned file forever.
-    data = None
-    if os.path.exists(data_file):
+    if data is None and os.path.exists(data_file):
         cached = pd.read_csv(data_file, on_bad_lines="skip", encoding="utf-8")
         if (
             not cached.empty

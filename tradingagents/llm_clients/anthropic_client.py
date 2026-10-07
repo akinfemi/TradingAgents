@@ -1,7 +1,11 @@
 import re
 from typing import Any
 
+import anthropic
 from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage
+from langchain_core.output_parsers.openai_tools import PydanticToolsParser
+from langchain_core.runnables import RunnableLambda
 
 from .base_client import BaseLLMClient, normalize_content
 from .validators import validate_model
@@ -38,6 +42,16 @@ def _supports_effort(model: str) -> bool:
     return (major, minor) >= _EFFORT_MIN_VERSION[family]
 
 
+# Models that reject a forced tool choice (``tool_choice`` "any"/"tool") with a
+# 400. LangChain's default structured output forces the schema tool, so these
+# take Anthropic's native JSON-schema output instead (tickeragent.ai).
+_NO_FORCED_TOOL = re.compile(r"^claude-(opus-5-5|sonnet-5-5|fable-5-1|mythos-5-1)(?:$|[-@:])")
+
+
+def rejects_forced_tool_choice(model: str) -> bool:
+    return bool(_NO_FORCED_TOOL.match(model.lower()))
+
+
 class NormalizedChatAnthropic(ChatAnthropic):
     """ChatAnthropic with normalized content output.
 
@@ -48,6 +62,38 @@ class NormalizedChatAnthropic(ChatAnthropic):
 
     def invoke(self, input, config=None, **kwargs):
         return normalize_content(super().invoke(input, config, **kwargs))
+
+    def with_structured_output(self, schema, *, method=None, **kwargs):
+        if method is not None or not rejects_forced_tool_choice(self.model):
+            return super().with_structured_output(
+                schema, method=method or "function_calling", **kwargs
+            )
+        # Native JSON-schema output first. Anthropic refuses schemas it finds
+        # too complex (the report digest, 2026-10-07) with a 400; those fall
+        # back to an unforced tool call the model is told to make.
+        native = super().with_structured_output(schema, method="json_schema", **kwargs)
+        return native.with_fallbacks(
+            [self._auto_tool_output(schema)], exceptions_to_handle=(anthropic.BadRequestError,)
+        )
+
+    def _auto_tool_output(self, schema):
+        """Structured output through an unforced tool call (tool_choice auto)."""
+        name = getattr(schema, "__name__", "output")
+        instruction = (
+            f"Answer by calling the {name} tool exactly once with the complete result. "
+            "Do not answer in prose."
+        )
+
+        def with_instruction(value):
+            if isinstance(value, str):
+                return f"{value}\n\n{instruction}"
+            if isinstance(value, list):
+                return [*value, HumanMessage(content=instruction)]
+            return value
+
+        bound = self.bind_tools([schema], tool_choice="auto")
+        parser = PydanticToolsParser(tools=[schema], first_tool_only=True)
+        return RunnableLambda(with_instruction) | bound | parser
 
 
 class AnthropicClient(BaseLLMClient):

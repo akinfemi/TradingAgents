@@ -8,6 +8,7 @@ from yfinance.exceptions import YFPricesMissingError, YFRateLimitError
 
 from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
 from tradingagents.dataflows.net import vendor_reachable
+from tradingagents.dataflows.yf_throttle import yf_gate
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,9 @@ def yf_retry(func, max_retries=3, base_delay=2.0):
     """
     for attempt in range(max_retries + 1):
         try:
+            # Every Yahoo request goes through here, so the pacing gate lives
+            # here too (it also paces the retries).
+            yf_gate()
             return func()
         except YFRateLimitError as exc:
             if attempt < max_retries:

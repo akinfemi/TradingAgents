@@ -50,7 +50,15 @@ class AgentState(MessagesState):
 
     # research step
     market_report: Annotated[str, "Report from the Market Analyst"]
+    extra_sentiment_blocks: Annotated[
+        list,
+        "(source_name, block_text) pairs from user-connected sources, fetched once "
+        "before the run and shown to the Sentiment Analyst as extra data blocks",
+    ]
     sentiment_report: Annotated[str, "Report from the Sentiment Analyst"]
+    sentiment_structured: Annotated[
+        dict | None, "The Sentiment Analyst's typed report as a JSON dict; None on free-text fallback"
+    ]
     news_report: Annotated[str, "Report from the News Analyst on company and world news"]
     fundamentals_report: Annotated[str, "Report from the Fundamentals Analyst"]
 
@@ -68,6 +76,9 @@ class AgentState(MessagesState):
     ]
     final_trade_decision: Annotated[str, "Final decision from the Portfolio Manager"]
     final_rating: Annotated[str, "The Portfolio Manager's 5-tier rating, or REVIEW when it has none"]
+    portfolio_decision: Annotated[
+        dict | None, "The Portfolio Manager's typed decision as a JSON dict; None on free-text fallback"
+    ]
     past_context: Annotated[str, "Memory log context for the Portfolio Manager (same-ticker decisions + cross-ticker lessons), written by the Memory Log step"]
     memory_note: Annotated[str, "What the Memory Log step could not settle or read this run, for the report; empty when all went well"]
     portfolio_context: Annotated[str, "Caller-supplied holdings and cash, rendered at run start; empty when not provided"]

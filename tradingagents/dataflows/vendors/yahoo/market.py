@@ -7,8 +7,10 @@ import yfinance as yf
 from dateutil.relativedelta import relativedelta
 from stockstats import wrap
 
+from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.errors import NoMarketDataError, VendorError
 from tradingagents.dataflows.symbols import normalize_symbol
+from tradingagents.dataflows.tiingo import price_vendor, tiingo_symbol
 from tradingagents.dataflows.vendors.yahoo.common import raise_for_empty, yf_retry
 from tradingagents.dataflows.vendors.yahoo.ohlcv import _assert_ohlcv_not_stale, load_ohlcv
 
@@ -26,12 +28,21 @@ def get_YFin_data_online(
 
     # Resolve broker/forex symbols to Yahoo's convention (XAUUSD+ -> GC=F).
     canonical = normalize_symbol(symbol)
+    source = "Yahoo Finance"
 
-    # yfinance treats ``end`` as EXCLUSIVE, so it would drop the requested
-    # end_date row (and the current day when end_date is today). Request one day
-    # past end_date so the requested range is actually inclusive (#986/#987).
-    end_inclusive = (end_dt + relativedelta(days=1)).strftime("%Y-%m-%d")
-    data = yf_retry(lambda: yf.Ticker(canonical).history(start=start_date, end=end_inclusive))
+    if price_vendor(get_config()) == "tiingo" and tiingo_symbol(canonical) is not None:
+        # The licensed source, through the same per-run cache the indicators
+        # and the snapshot read, so the agent quotes one set of prices.
+        frame = load_ohlcv(canonical, end_date, fill_gaps=False)
+        frame = frame[frame["Date"] >= pd.Timestamp(start_date)]
+        data = frame.set_index("Date")
+        source = "Tiingo"
+    else:
+        # yfinance treats ``end`` as EXCLUSIVE, so it would drop the requested
+        # end_date row (and the current day when end_date is today). Request one
+        # day past end_date so the requested range is inclusive (#986/#987).
+        end_inclusive = (end_dt + relativedelta(days=1)).strftime("%Y-%m-%d")
+        data = yf_retry(lambda: yf.Ticker(canonical).history(start=start_date, end=end_inclusive))
 
     # Empty result means the symbol is unknown/delisted. Raise a typed error
     # instead of returning prose: the routing layer turns it into a single
@@ -60,6 +71,7 @@ def get_YFin_data_online(
     # instrument was priced.
     label = canonical if canonical == symbol.upper() else f"{canonical} (from {symbol})"
     header = f"# Stock data for {label} from {start_date} to {end_date}\n"
+    header += f"# Source: {source}\n"
     header += f"# Total records: {len(data)}\n\n"
 
     return header + csv_string

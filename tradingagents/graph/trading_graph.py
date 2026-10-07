@@ -21,6 +21,7 @@ from tradingagents.reporting import write_report_tree
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
 from .conditional_logic import ConditionalLogic
+from .digest import generate_report_digest
 from .propagation import Propagator
 from .setup import GraphSetup
 
@@ -57,6 +58,7 @@ class TradingAgentsGraph:
         debug=False,
         config: dict[str, Any] = None,
         callbacks: list | None = None,
+        extra_tools: dict[str, list] | None = None,
     ):
         """Initialize the trading agents graph and components.
 
@@ -65,10 +67,20 @@ class TradingAgentsGraph:
             debug: Whether to run in debug mode
             config: Configuration dictionary. If None, uses default config
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
+            extra_tools: Optional user-connected LangChain tools per analyst key
+                ("market" | "news" | "fundamentals"), offered to that analyst and
+                run in its tool node (tickeragent.ai connectors). The Sentiment
+                Analyst takes none: extra sentiment sources travel through the
+                initial state (see ``propagate``).
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         self.callbacks = callbacks or []
+        extra_tool_keys = ("market", "news", "fundamentals")
+        if extra_tools and (bad := set(extra_tools) - set(extra_tool_keys)):
+            raise ValueError(f"extra_tools keys must be in {extra_tool_keys}, got {sorted(bad)}")
+        self.extra_tools = {k: list(v) for k, v in (extra_tools or {}).items() if v}
+        self.last_state_log_path = None  # set by _log_state after each run
 
         set_config(self.config)
 
@@ -98,6 +110,7 @@ class TradingAgentsGraph:
             self.deep_thinking_llm,
             self.conditional_logic,
             max_tool_rounds,
+            extra_tools=self.extra_tools,
         )
 
         self.propagator = Propagator(
@@ -164,7 +177,9 @@ class TradingAgentsGraph:
             f"settings={digest}",
         ])
 
-    def propagate(self, company_name, trade_date, asset_type: str = "stock", portfolio=None):
+    def propagate(self, company_name, trade_date, asset_type: str = "stock", portfolio=None,
+                  on_progress=None, callbacks: list | None = None,
+                  extra_sentiment_blocks: list | None = None):
         """Run the trading agents graph for a company on a specific date.
 
         ``asset_type`` selects between the stock pipeline (default) and the
@@ -179,6 +194,20 @@ class TradingAgentsGraph:
         when the decision had no parseable rating (#1170); guard with
         ``tradingagents.agents.rating.is_review`` before mapping it to the
         PortfolioRating enum.
+
+        tickeragent.ai additions:
+
+        ``on_progress``: optional ``fn(node_name, delta, merged_state)`` called
+        after each top-level graph step (an analyst files its report, a
+        debater speaks, ...). The deltas are merged over the initial state so
+        the returned final state matches what ``invoke`` returns; the merged
+        state passed to the callback is live, treat it as read-only.
+
+        ``callbacks``: callback handlers forwarded to the graph invocation, so
+        they see tool executions as well as model calls.
+
+        ``extra_sentiment_blocks``: ``(source_name, block_text)`` pairs from
+        user-connected sources, fetched by the caller before the run.
         """
         trade_date = _validate_trade_date(trade_date)
 
@@ -187,6 +216,8 @@ class TradingAgentsGraph:
             return self._run_graph(
                 company_name, trade_date, asset_type=asset_type,
                 checkpoint_thread_id=thread_id_value, portfolio=portfolio,
+                on_progress=on_progress, callbacks=callbacks,
+                extra_sentiment_blocks=extra_sentiment_blocks,
             )
 
     def begin_checkpoint(self, company_name, trade_date, asset_type: str = "stock", portfolio=None) -> str | None:
@@ -290,7 +321,8 @@ class TradingAgentsGraph:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return Path(self.config["results_dir"]) / "reports" / f"{safe_ticker_component(ticker)}_{stamp}"
 
-    def create_run_state(self, company_name, trade_date, asset_type: str = "stock", portfolio=None):
+    def create_run_state(self, company_name, trade_date, asset_type: str = "stock", portfolio=None,
+                         extra_sentiment_blocks: list | None = None):
         """Build a run's initial state; propagate() and the CLI both start here.
 
         Injects the resolved instrument identity for every agent (#814). The
@@ -303,6 +335,7 @@ class TradingAgentsGraph:
             asset_type=asset_type,
             instrument_context=self.resolve_instrument_context(company_name, asset_type, trade_date),
             portfolio_context=portfolio.render(company_name) if portfolio is not None else "",
+            extra_sentiment_blocks=extra_sentiment_blocks,
         )
 
     def _memory_step(self, state):
@@ -370,10 +403,15 @@ class TradingAgentsGraph:
         )
 
     def _run_graph(self, company_name, trade_date, asset_type: str = "stock",
-                   checkpoint_thread_id: str | None = None, portfolio=None):
+                   checkpoint_thread_id: str | None = None, portfolio=None,
+                   on_progress=None, callbacks: list | None = None,
+                   extra_sentiment_blocks: list | None = None):
         """Execute the graph and write the resulting state to disk and memory log."""
-        init_agent_state = self.create_run_state(company_name, trade_date, asset_type, portfolio)
-        args = self.propagator.get_graph_args()
+        init_agent_state = self.create_run_state(
+            company_name, trade_date, asset_type, portfolio,
+            extra_sentiment_blocks=extra_sentiment_blocks,
+        )
+        args = self.propagator.get_graph_args(callbacks=callbacks)
 
         # Inject the checkpoint thread_id (from checkpoint_scope) so the same
         # ticker+date+graph-shape resumes; a different one starts fresh (#1089).
@@ -393,8 +431,26 @@ class TradingAgentsGraph:
                         msg.pretty_print()
                 if state is not None:
                     final_state.update(state)
+        elif on_progress is not None:
+            final_state = self._stream_with_progress(graph_input, init_agent_state, args, on_progress)
         else:
             final_state = self.graph.invoke(graph_input, **args)
+
+        # The curated summary layer for report surfaces (tickeragent.ai). Price
+        # facts computed in code from this run's own prices anchor its numbers;
+        # it runs on the deep model. None on any failure, never fatal.
+        digest_llm = getattr(self, "deep_thinking_llm", None)
+        if digest_llm is not None and self.config.get("report_digest", True):
+            from tradingagents.quality.technicals import computed_context
+
+            final_state["report_digest"] = generate_report_digest(
+                digest_llm,
+                final_state,
+                callbacks=callbacks,
+                computed_context=computed_context(
+                    final_state.get("company_of_interest") or company_name, str(trade_date)
+                ),
+            )
 
         self.record_decision(company_name, trade_date, final_state)
 
@@ -402,6 +458,30 @@ class TradingAgentsGraph:
         self.clear_checkpoint_on_success(company_name, trade_date, asset_type, portfolio)
 
         return final_state, run_rating(final_state)
+
+    def _stream_with_progress(self, graph_input, init_agent_state, args, on_progress):
+        """Run the graph step by step, calling ``on_progress`` after each
+        top-level step with its node name and output (tickeragent.ai).
+
+        Each chunk of ``stream_mode="updates"`` is ``{node_name: delta}``; an
+        analyst's subgraph reports once, with its report. Merging the deltas
+        over the initial state gives the state ``invoke`` would return.
+        """
+        args = {**args, "stream_mode": "updates"}
+        final_state = dict(init_agent_state)
+        for chunk in self.graph.stream(graph_input, **args):
+            for node_name, delta in chunk.items():
+                if node_name.startswith("__"):  # LangGraph metadata, not node output
+                    continue
+                # A node writing a channel more than once yields a list of dicts.
+                deltas = delta if isinstance(delta, list) else [delta]
+                merged: dict = {}
+                for d in deltas:
+                    if d:
+                        final_state.update(d)
+                        merged.update(d)
+                on_progress(node_name, merged, final_state)
+        return final_state
 
     def stream_run(self, graph_input, **args):
         """Stream a run as ``(messages, state)`` pairs.
@@ -462,6 +542,10 @@ class TradingAgentsGraph:
             "final_trade_decision": final_state["final_trade_decision"],
             "final_rating": run_rating(final_state),
             "run_settings": self.run_settings(),
+            # tickeragent.ai report surfaces read these.
+            "sentiment_structured": final_state.get("sentiment_structured"),
+            "portfolio_decision": final_state.get("portfolio_decision"),
+            "report_digest": final_state.get("report_digest"),
         }
 
         # A ticker that would escape the results directory is rejected.
@@ -473,3 +557,5 @@ class TradingAgentsGraph:
         with open(log_path, "w", encoding="utf-8") as f:
             # Reports can be in any language and this file is read by a person.
             json.dump(entry, f, indent=4, ensure_ascii=False)
+        # Where the machine-readable state landed, for programmatic callers.
+        self.last_state_log_path = log_path

@@ -1,0 +1,18 @@
+{
+  "trade_date": "2026-10-05",
+  "note": "Fixed set and date (REPORT_QUALITY_PLAN R1). ONDS on 2026-10-05 is the reference failure; the rest cover company size, sector, an ADR and tickers that are also words. Change only with a new baseline.",
+  "tickers": [
+    {"ticker": "ONDS", "why": "reference failure: small-cap roll-up, warrants, stock-paid M&A"},
+    {"ticker": "MSFT", "why": "mega-cap software"},
+    {"ticker": "NVDA", "why": "mega-cap semiconductors"},
+    {"ticker": "JPM", "why": "bank: different statements, no gross margin"},
+    {"ticker": "O", "why": "REIT: FFO-style economics, single-letter ticker"},
+    {"ticker": "MRNA", "why": "loss-making biotech"},
+    {"ticker": "TSM", "why": "ADR, foreign filer"},
+    {"ticker": "ON", "why": "ticker that is also a word"},
+    {"ticker": "NOW", "why": "ticker that is also a word"},
+    {"ticker": "F", "why": "single-letter ticker, cyclical"},
+    {"ticker": "XOM", "why": "energy, commodity-driven"},
+    {"ticker": "COST", "why": "consumer staples, high multiple"}
+  ]
+}

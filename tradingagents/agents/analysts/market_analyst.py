@@ -12,7 +12,9 @@ TOOLS = (
 )
 
 
-def create_market_analyst(llm):
+def create_market_analyst(llm, extra_tools=None):
+    # Its built-in tools plus any user-connected ones (tickeragent.ai connectors).
+    tools = TOOLS + tuple(extra_tools or ())
 
     def market_analyst_node(state):
         current_date = state["trade_date"]
@@ -70,11 +72,11 @@ Write a very detailed and nuanced report of the trends you observe. Provide spec
         )
 
         prompt = prompt.partial(system_message=system_message)
-        prompt = prompt.partial(tool_names=", ".join([tool.name for tool in TOOLS]))
+        prompt = prompt.partial(tool_names=", ".join([tool.name for tool in tools]))
         prompt = prompt.partial(current_date=current_date)
         prompt = prompt.partial(instrument_context=instrument_context)
 
-        result, report = take_turn(prompt, llm, TOOLS, state["messages"])
+        result, report = take_turn(prompt, llm, tools, state["messages"])
 
         return {
             "messages": [result],

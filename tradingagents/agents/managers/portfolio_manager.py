@@ -101,6 +101,8 @@ Write these sections, in this order, starting with the rating on its own line:
             "risk_debate_state": new_risk_debate_state,
             "final_trade_decision": final_trade_decision,
             "final_rating": final_rating,
+            # The typed decision, kept for report surfaces (tickeragent.ai).
+            "portfolio_decision": decision.model_dump(mode="json") if decision is not None else None,
         }
 
     return portfolio_manager_node

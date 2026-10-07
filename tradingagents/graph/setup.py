@@ -50,7 +50,7 @@ def _tools_or_done(state) -> str:
     return "tools" if state["messages"][-1].tool_calls else END
 
 
-def _analyst_graph(spec, agent, max_tool_rounds: int):
+def _analyst_graph(spec, agent, max_tool_rounds: int, tools: tuple | None = None):
     """One analyst as a graph of its own: the model and its tools, on a private message history.
 
     It returns only its report, so analysts running side by side never write the
@@ -59,11 +59,14 @@ def _analyst_graph(spec, agent, max_tool_rounds: int):
     that turn ends it whatever it answers, so a model that keeps calling tools
     cannot run the graph into its recursion limit (#1420).
     """
+    # The analyst's tools: its built-ins plus any user-connected ones
+    # (tickeragent.ai), the same tuple its factory binds to the model.
+    tools = tuple(spec.tools) if tools is None else tuple(tools)
     output = TypedDict(f"{spec.key.capitalize()}Report", {spec.report_key: str})
     graph = StateGraph(AgentState, output_schema=output)
     graph.add_node("agent", agent)
     graph.add_edge(START, "agent")
-    if not spec.tools:
+    if not tools:
         graph.add_edge("agent", END)
         return graph.compile()
 
@@ -82,7 +85,7 @@ def _analyst_graph(spec, agent, max_tool_rounds: int):
                        spec.agent_node, max_tool_rounds, repeated)
         return agent({**state, "messages": [*state["messages"], HumanMessage(WRAP_UP)]})
 
-    graph.add_node("tools", ToolNode(list(spec.tools)))
+    graph.add_node("tools", ToolNode(list(tools)))
     graph.add_node("wrap_up", wrap_up)
     graph.add_conditional_edges("agent", _tools_or_done, ["tools", END])
     graph.add_conditional_edges("tools", more_or_wrap_up, ["agent", "wrap_up"])
@@ -99,12 +102,19 @@ class GraphSetup:
         deep_thinking_llm: Any,
         conditional_logic: ConditionalLogic,
         max_tool_rounds: int,
+        extra_tools: dict[str, list] | None = None,
     ):
-        """Initialize with required components."""
+        """Initialize with required components.
+
+        ``extra_tools``: optional user-connected tools per analyst key
+        ("market" | "news" | "fundamentals"), offered to that analyst's model
+        and run by its tool node (tickeragent.ai connectors).
+        """
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
         self.conditional_logic = conditional_logic
         self.max_tool_rounds = max_tool_rounds
+        self.extra_tools = extra_tools or {}
 
     def setup_graph(
         self, selected_analysts=("market", "social", "news", "fundamentals"), memory_node=None
@@ -122,11 +132,13 @@ class GraphSetup:
         """
         plan = build_analyst_execution_plan(selected_analysts)
 
+        extra = {key: tuple(tools) for key, tools in self.extra_tools.items()}
         analyst_factories = {
-            "market": lambda: create_market_analyst(self.quick_thinking_llm),
+            "market": lambda: create_market_analyst(self.quick_thinking_llm, extra_tools=extra.get("market")),
             "social": lambda: create_sentiment_analyst(self.quick_thinking_llm),
-            "news": lambda: create_news_analyst(self.quick_thinking_llm),
-            "fundamentals": lambda: create_fundamentals_analyst(self.quick_thinking_llm),
+            "news": lambda: create_news_analyst(self.quick_thinking_llm, extra_tools=extra.get("news")),
+            "fundamentals": lambda: create_fundamentals_analyst(
+                self.quick_thinking_llm, extra_tools=extra.get("fundamentals")),
         }
 
         bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)
@@ -143,7 +155,8 @@ class GraphSetup:
 
         for spec in plan.specs:
             workflow.add_node(spec.agent_node,
-                              _analyst_graph(spec, analyst_factories[spec.key](), self.max_tool_rounds))
+                              _analyst_graph(spec, analyst_factories[spec.key](), self.max_tool_rounds,
+                                             tools=tuple(spec.tools) + extra.get(spec.key, ())))
 
         workflow.add_node("Bull Researcher", bull_researcher_node)
         workflow.add_node("Bear Researcher", bear_researcher_node)

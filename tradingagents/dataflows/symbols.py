@@ -58,6 +58,10 @@ _ALIASES = {
     "BCOUSD": "BZ=F", "UKOIL": "BZ=F", "BRENT": "BZ=F",
     "NATGAS": "NG=F", "XNGUSD": "NG=F",
     "COPPER": "HG=F", "XCUUSD": "HG=F",
+    # Share classes: brokers and NYSE tape write a dot (BRK.B), Yahoo wants
+    # a dash. Alias rows, not a blanket dot->dash rule: exchange suffixes
+    # like 0700.HK keep their dot (tickeragent.ai).
+    "BRK.A": "BRK-A", "BRK.B": "BRK-B", "BF.A": "BF-A", "BF.B": "BF-B",
     # Index CFDs -> Yahoo index symbols
     "SPX500": "^GSPC", "US500": "^GSPC", "SPX": "^GSPC",
     "NAS100": "^NDX", "US100": "^NDX", "USTEC": "^NDX",
@@ -178,3 +182,30 @@ def safe_ticker_component(value: str, *, max_len: int = 32) -> str:
     if set(value) == {"."}:
         raise ValueError(f"ticker cannot consist solely of dots: {value!r}")
     return value
+
+
+# --- tickeragent.ai: helpers the server uses without importing the CLI ---------
+
+# Yahoo symbols may contain letters, digits, and these structural characters.
+_YAHOO_SAFE = re.compile(r"^[A-Za-z0-9._\-\^=]+$")
+
+# Canonical symbols with these suffixes are crypto pairs (as cli/prompts.py).
+CRYPTO_SUFFIXES = ("-USD", "-USDT", "-USDC", "-BTC", "-ETH")
+
+
+def is_yahoo_safe(symbol: str) -> bool:
+    """True when ``symbol`` only contains characters Yahoo symbols use."""
+    return bool(symbol) and _YAHOO_SAFE.fullmatch(symbol) is not None
+
+
+def detect_asset_type(ticker: str) -> str:
+    """``"stock"`` or ``"crypto"``, classified on the canonical symbol (as the
+    CLI does), in the plain strings ``TradingAgentsGraph.propagate`` takes."""
+    return "crypto" if normalize_symbol(ticker).endswith(CRYPTO_SUFFIXES) else "stock"
+
+
+def filter_analysts_for_asset_type(analysts: list[str], asset_type: str) -> list[str]:
+    """Crypto has no financial statements, so it runs without the fundamentals analyst."""
+    if asset_type != "crypto":
+        return list(analysts)
+    return [a for a in analysts if a != "fundamentals"]

@@ -126,6 +126,10 @@ def build_default_config() -> dict:
         # Checkpoint/resume: when True, LangGraph saves state after each node
         # so a crashed run can resume from the last successful step.
         "checkpoint_enabled": False,
+        # Post-run report digest (tickeragent.ai): one deep-model call that
+        # distills the transcripts into the summary report surfaces render.
+        # Optional decoration: a failure never fails the run.
+        "report_digest": True,
         # Output language for analyst reports and final decision
         # Internal agent debate stays in English for reasoning quality
         "output_language": "English",
@@ -155,7 +159,11 @@ def build_default_config() -> dict:
         # The configured value is the exact vendor chain — requests are NOT silently
         # routed to vendors you didn't choose. For ordered fallback, list several,
         # e.g. "yfinance,alpha_vantage". "default" uses all available vendors.
-        "data_vendors": {
+        # OHLCV source for every price consumer (get_stock_data, indicators, the
+    # verified snapshot): "yfinance" or "tiingo" (licensed; needs
+    # TIINGO_API_KEY). TRADINGAGENTS_PRICE_VENDOR overrides. tickeragent.ai.
+    "price_vendor": os.getenv("TRADINGAGENTS_PRICE_VENDOR", "yfinance"),
+    "data_vendors": {
             "core_stock_apis": "yfinance",       # Options: alpha_vantage, yfinance
             "technical_indicators": "yfinance",  # Options: alpha_vantage, yfinance
             # Statements come from SEC EDGAR as filed (US filers), then Yahoo; the

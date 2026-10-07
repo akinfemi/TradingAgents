@@ -11,7 +11,8 @@ from tradingagents.dataflows.symbols import crypto_base, normalize_symbol
 @pytest.mark.unit
 class TestNormalizeSymbol(unittest.TestCase):
     def test_plain_equities_unchanged(self):
-        for sym in ("AAPL", "MSFT", "TSM", "BRK.B", "0700.HK", "^GSPC", "GC=F"):
+        # BRK.B is aliased to Yahoo's BRK-B (tickeragent.ai share-class aliases).
+        for sym in ("AAPL", "MSFT", "TSM", "0700.HK", "^GSPC", "GC=F"):
             self.assertEqual(normalize_symbol(sym), sym)
 
     def test_lowercases_are_upper(self):
@@ -106,3 +107,11 @@ class TestCryptoBase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestShareClassAliases(unittest.TestCase):
+    """tickeragent.ai: dotted share classes resolve to Yahoo's dash form."""
+
+    def test_dotted_share_classes(self):
+        for raw, want in (("BRK.B", "BRK-B"), ("brk.a", "BRK-A"), ("BF.B", "BF-B")):
+            self.assertEqual(normalize_symbol(raw), want)
