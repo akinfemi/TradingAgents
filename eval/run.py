@@ -39,7 +39,7 @@ def run_one(ticker: str, trade_date: str, out_dir: Path, base_config: dict) -> d
     graph = TradingAgentsGraph(selected_analysts=["market", "social", "news", "fundamentals"], config=config)
     final_state, rating = graph.propagate(ticker, trade_date, callbacks=[stats])
     elapsed = time.monotonic() - started
-    graph.save_reports(final_state, ticker, save_path=out_dir / "reports")
+    graph.save_reports(final_state, ticker, save_path=out_dir / "reports", html=False)
     record = {
         "ticker": ticker,
         "trade_date": trade_date,
