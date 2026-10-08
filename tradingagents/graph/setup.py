@@ -109,6 +109,7 @@ class GraphSetup:
         max_tool_rounds: int,
         extra_tools: dict[str, list] | None = None,
         quality_gates: bool = False,
+        quality_loop: bool = False,
     ):
         """Initialize with required components.
 
@@ -124,6 +125,8 @@ class GraphSetup:
         # REPORT_QUALITY_PLAN R5: lint every stage against the fact sheet
         # before the next one reads it (no-op for a run without a sheet).
         self.quality_gates = quality_gates
+        # R6: stages before a revision's restart return the previous pass's output.
+        self.quality_loop = quality_loop
 
     def setup_graph(
         self, selected_analysts=("market", "social", "news", "fundamentals"), memory_node=None
@@ -186,18 +189,38 @@ class GraphSetup:
                 portfolio_manager_node, "portfolio_manager", "final_trade_decision", deep, "portfolio manager",
                 fix=False)
 
+        if self.quality_loop:
+            from tradingagents.quality import gates as _g
+
+            bull_researcher_node = _g.kept_or_run(
+                "research", bull_researcher_node, lambda k: {"investment_debate_state": k["investment_debate_state"]})
+            bear_researcher_node = _g.kept_or_run(
+                "research", bear_researcher_node, lambda k: {"investment_debate_state": k["investment_debate_state"]})
+            research_manager_node = _g.kept_or_run("research", research_manager_node)
+            trader_node = _g.kept_or_run("trader", trader_node)
+            aggressive_analyst = _g.kept_or_run("risk", aggressive_analyst)
+            conservative_analyst = _g.kept_or_run("risk", conservative_analyst)
+            neutral_analyst = _g.kept_or_run("risk", neutral_analyst)
+
         workflow = StateGraph(AgentState)
 
         analyst_exits = []
         for spec in plan.specs:
-            workflow.add_node(spec.agent_node,
-                              _analyst_graph(spec, analyst_factories[spec.key](), self.max_tool_rounds,
-                                             tools=tuple(spec.tools) + extra.get(spec.key, ())))
+            analyst = _analyst_graph(spec, analyst_factories[spec.key](), self.max_tool_rounds,
+                                     tools=tuple(spec.tools) + extra.get(spec.key, ()))
+            if self.quality_loop:
+                from tradingagents.quality import gates as _g
+
+                analyst = _g.kept_analyst(spec.key, analyst)
+            workflow.add_node(spec.agent_node, analyst)
             if self.quality_gates:
                 check = f"{spec.agent_node} Check"
                 stage = {"social": "sentiment"}.get(spec.key, spec.key) + "_analyst"
-                workflow.add_node(check, gates.analyst_check(spec.report_key, stage, self.quick_thinking_llm,
-                                                             f"{spec.key} analyst"))
+                check_node = gates.analyst_check(spec.report_key, stage, self.quick_thinking_llm,
+                                                 f"{spec.key} analyst")
+                if self.quality_loop:
+                    check_node = gates.skip_if_kept(spec.key, check_node)
+                workflow.add_node(check, check_node)
                 workflow.add_edge(spec.agent_node, check)
                 analyst_exits.append(check)
             else:

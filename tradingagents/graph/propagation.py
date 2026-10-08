@@ -21,6 +21,8 @@ class Propagator:
         extra_sentiment_blocks: list | None = None,
         fact_sheet: dict | None = None,
         fact_sheet_text: str = "",
+        review_errata: str = "",
+        kept: dict | None = None,
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -39,6 +41,8 @@ class Propagator:
             "fact_sheet_text": fact_sheet_text,
             "open_errata": [],
             "quality_gates": [],
+            "review_errata": review_errata,
+            "kept": kept or {},
             "trade_date": str(trade_date),
             "past_context": past_context,
             "memory_note": "",

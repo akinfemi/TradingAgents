@@ -177,3 +177,44 @@ def text_stage(node: Callable, stage: str, field_name: str, llm, role: str, fix:
         return out
 
     return wrapped
+
+
+# ---- revisions: kept stages (R6) ----------------------------------------------------------
+
+
+def kept_analyst(group: str, subgraph) -> Callable:
+    """An analyst node that, in a revision, returns its kept report instead of
+    running; otherwise runs its subgraph as before."""
+
+    def node(state: dict, config=None) -> dict:
+        kept = (state.get("kept") or {}).get(group)
+        if kept:
+            return dict(kept)
+        return subgraph.invoke(state, config)
+
+    return node
+
+
+def kept_or_run(group: str, node: Callable, pick: Callable[[dict], dict] | None = None) -> Callable:
+    """A node that, in a revision, returns its group's kept output (a finished
+    debate state ends its debate at once: the kept count is final)."""
+
+    def wrapped(state: dict) -> dict:
+        kept = (state.get("kept") or {}).get(group)
+        if kept:
+            out = pick(kept) if pick else dict(kept)
+            return {k: v for k, v in out.items() if v is not None}
+        return node(state)
+
+    return wrapped
+
+
+def skip_if_kept(group: str, node: Callable) -> Callable:
+    """A gate node that does nothing for a kept analyst (already checked)."""
+
+    def wrapped(state: dict) -> dict:
+        if (state.get("kept") or {}).get(group):
+            return {}
+        return node(state)
+
+    return wrapped

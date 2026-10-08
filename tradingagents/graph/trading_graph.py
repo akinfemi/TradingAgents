@@ -115,6 +115,7 @@ class TradingAgentsGraph:
             max_tool_rounds,
             extra_tools=self.extra_tools,
             quality_gates=bool(self.config.get("quality_gates")),
+            quality_loop=bool(self.config.get("quality_loop")),
         )
 
         self.propagator = Propagator(
@@ -183,7 +184,8 @@ class TradingAgentsGraph:
 
     def propagate(self, company_name, trade_date, asset_type: str = "stock", portfolio=None,
                   on_progress=None, callbacks: list | None = None,
-                  extra_sentiment_blocks: list | None = None, run_started_at: str | None = None):
+                  extra_sentiment_blocks: list | None = None, run_started_at: str | None = None,
+                  revision: dict | None = None, record: bool = True):
         """Run the trading agents graph for a company on a specific date.
 
         ``asset_type`` selects between the stock pipeline (default) and the
@@ -215,6 +217,12 @@ class TradingAgentsGraph:
 
         ``run_started_at``: UTC ISO time the run started, for the fact sheet's
         session clock (defaults to now).
+
+        ``revision`` (R6): a re-run after a failed review: ``fact_sheet`` and
+        ``fact_sheet_text`` (reused, not rebuilt), ``review_errata`` (shown
+        first to every re-run stage) and ``kept`` (outputs of stages before the
+        restart). ``record=False`` skips the state log and memory log, which the
+        quality loop writes once, for the final pass.
         """
         trade_date = _validate_trade_date(trade_date)
 
@@ -225,6 +233,7 @@ class TradingAgentsGraph:
                 checkpoint_thread_id=thread_id_value, portfolio=portfolio,
                 on_progress=on_progress, callbacks=callbacks,
                 extra_sentiment_blocks=extra_sentiment_blocks, run_started_at=run_started_at,
+                revision=revision, record=record,
             )
 
     def begin_checkpoint(self, company_name, trade_date, asset_type: str = "stock", portfolio=None) -> str | None:
@@ -330,15 +339,18 @@ class TradingAgentsGraph:
 
     def create_run_state(self, company_name, trade_date, asset_type: str = "stock", portfolio=None,
                          extra_sentiment_blocks: list | None = None, run_started_at: str | None = None,
-                         callbacks: list | None = None):
+                         callbacks: list | None = None, revision: dict | None = None):
         """Build a run's initial state; propagate() and the CLI both start here.
 
         Injects the resolved instrument identity for every agent (#814). The
         memory log's lessons are not here: the graph's Memory Log step settles
         and loads them alongside the analysts (see ``_memory_step``).
         """
-        sheet, sheet_text = self.build_fact_sheet(company_name, trade_date, asset_type, run_started_at,
-                                                  callbacks=callbacks)
+        if revision and revision.get("fact_sheet"):
+            sheet, sheet_text = revision["fact_sheet"], revision.get("fact_sheet_text") or ""
+        else:
+            sheet, sheet_text = self.build_fact_sheet(company_name, trade_date, asset_type, run_started_at,
+                                                      callbacks=callbacks)
         return self.propagator.create_initial_state(
             company_name,
             trade_date,
@@ -348,6 +360,8 @@ class TradingAgentsGraph:
             extra_sentiment_blocks=extra_sentiment_blocks,
             fact_sheet=sheet,
             fact_sheet_text=sheet_text,
+            review_errata=(revision or {}).get("review_errata", ""),
+            kept=(revision or {}).get("kept"),
         )
 
     def build_fact_sheet(self, company_name, trade_date, asset_type: str = "stock",
@@ -442,12 +456,13 @@ class TradingAgentsGraph:
     def _run_graph(self, company_name, trade_date, asset_type: str = "stock",
                    checkpoint_thread_id: str | None = None, portfolio=None,
                    on_progress=None, callbacks: list | None = None,
-                   extra_sentiment_blocks: list | None = None, run_started_at: str | None = None):
+                   extra_sentiment_blocks: list | None = None, run_started_at: str | None = None,
+                   revision: dict | None = None, record: bool = True):
         """Execute the graph and write the resulting state to disk and memory log."""
         init_agent_state = self.create_run_state(
             company_name, trade_date, asset_type, portfolio,
             extra_sentiment_blocks=extra_sentiment_blocks, run_started_at=run_started_at,
-            callbacks=callbacks,
+            callbacks=callbacks, revision=revision,
         )
         args = self.propagator.get_graph_args(callbacks=callbacks)
 
@@ -507,7 +522,8 @@ class TradingAgentsGraph:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("quality lint failed: %s", exc, exc_info=True)
 
-        self.record_decision(company_name, trade_date, final_state)
+        if record:
+            self.record_decision(company_name, trade_date, final_state)
 
         # Clear checkpoint on successful completion to avoid stale state.
         self.clear_checkpoint_on_success(company_name, trade_date, asset_type, portfolio)

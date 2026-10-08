@@ -138,6 +138,11 @@ def build_default_config() -> dict:
         # Stage gates (tickeragent.ai, R5): lint each stage against the fact
         # sheet, one fix-up turn on blocking errors, open errata forward.
         "quality_gates": False,
+        # The quality loop (tickeragent.ai, R6): an editor reviews the finished
+        # run; up to two revisions from the earliest bad stage, then a hold.
+        "quality_loop": False,
+        "editor_llm": None,        # defaults to deep_think_llm
+        "editor_effort": None,
         # Output language for analyst reports and final decision
         # Internal agent debate stays in English for reasoning quality
         "output_language": "English",

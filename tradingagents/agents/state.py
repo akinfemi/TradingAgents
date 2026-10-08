@@ -53,6 +53,10 @@ class AgentState(MessagesState):
     # every later stage; and one record per gate. Appended to, never replaced
     # (the analysts' gates run side by side).
     open_errata: Annotated[list, operator.add]
+    # R6 revisions: the review errata every re-run stage sees first, and the
+    # previous pass's outputs for stages before the restart (returned as-is).
+    review_errata: Annotated[str, "Rendered errata from the failed review, empty on a first pass"]
+    kept: Annotated[dict, "Stage group -> the previous pass's output, for stages before the restart"]
     quality_gates: Annotated[list, operator.add]
     trade_date: Annotated[str, "The analysis date; data is served as of it"]
 
