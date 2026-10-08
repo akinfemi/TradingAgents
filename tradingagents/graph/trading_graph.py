@@ -27,6 +27,9 @@ from .setup import GraphSetup
 
 logger = logging.getLogger(__name__)
 
+# State keys whose reducer appends (agents/state.py); the streaming merge must too.
+_APPENDED_KEYS = ("open_errata", "quality_gates")
+
 
 def _validate_trade_date(trade_date) -> str:
     """The run date as a canonical ``YYYY-MM-DD`` string no later than today."""
@@ -530,7 +533,14 @@ class TradingAgentsGraph:
                 merged: dict = {}
                 for d in deltas:
                     if d:
-                        final_state.update(d)
+                        for key, value in d.items():
+                            # Appended channels (R5 gate records and errata)
+                            # accumulate, as the graph's reducer does; a plain
+                            # update kept only the last node's (staging, 2026-10-08).
+                            if key in _APPENDED_KEYS and isinstance(value, list):
+                                final_state[key] = list(final_state.get(key) or []) + value
+                            else:
+                                final_state[key] = value
                         merged.update(d)
                 on_progress(node_name, merged, final_state)
         return final_state

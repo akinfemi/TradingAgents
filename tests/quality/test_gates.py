@@ -118,3 +118,24 @@ def test_the_graph_compiles_with_and_without_gates(gated):
     edges = {(e.source, e.target) for e in graph.get_graph().edges}
     exit_ = "Market Analyst Check" if gated else "Market Analyst"
     assert (exit_, "Bull Researcher") in edges
+
+
+@pytest.mark.unit
+def test_streaming_keeps_every_gate_record():
+    """Staging, 2026-10-08: the progress stream's merge kept only the last
+    node's gate record; the graph's reducer appends them all."""
+    from tradingagents.graph.trading_graph import TradingAgentsGraph
+
+    graph = object.__new__(TradingAgentsGraph)
+
+    class FakeCompiled:
+        def stream(self, _input, **_args):
+            yield {"Market Analyst Check": {"quality_gates": [{"stage": "market"}], "open_errata": [{"stage": "market"}]}}
+            yield {"Bear Researcher": {"quality_gates": [{"stage": "bear"}]}}
+            yield {"Portfolio Manager": {"quality_gates": [{"stage": "pm"}], "final_trade_decision": "x"}}
+
+    graph.graph = FakeCompiled()
+    final = graph._stream_with_progress({}, {"quality_gates": [], "open_errata": []}, {}, lambda *a: None)
+    assert [g["stage"] for g in final["quality_gates"]] == ["market", "bear", "pm"]
+    assert [e["stage"] for e in final["open_errata"]] == ["market"]
+    assert final["final_trade_decision"] == "x"
