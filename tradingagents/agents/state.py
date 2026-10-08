@@ -46,6 +46,8 @@ class AgentState(MessagesState):
     company_of_interest: Annotated[str, "Company that we are interested in trading"]
     asset_type: Annotated[str, "Asset type under analysis such as stock or crypto"]
     instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]
+    fact_sheet: Annotated[dict | None, "The run's fact sheet (quality.facts.FactSheet as JSON), built in code at run start"]
+    fact_sheet_text: Annotated[str, "The fact sheet rendered for prompts, with a key on every figure"]
     trade_date: Annotated[str, "The analysis date; data is served as of it"]
 
     # research step

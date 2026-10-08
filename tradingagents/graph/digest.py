@@ -128,7 +128,9 @@ def build_digest_prompt(final_state: dict, computed_context: str | None = None) 
     if computed_context:
         parts.append(
             "## Computed figures (authoritative — computed in code from "
-            "this run's own price data, not model text)\n\n"
+            "this run's filings and price data, not model text)\n\n"
+            "Write figures as plain numbers: never copy the [F:…] keys "
+            "into the digest.\n\n"
             "When the source text disagrees with these figures, THESE are "
             "correct: quote these and do not repeat the contradicted number.\n\n"
             f"{computed_context}\n"

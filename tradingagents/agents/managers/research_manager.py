@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from tradingagents.agents.context import get_instrument_context_from_state, get_language_instruction
+from tradingagents.agents.context import (
+    get_instrument_context_from_state,
+    get_language_instruction,
+    report_or_absent,
+)
 from tradingagents.agents.schemas import ResearchPlan, render_research_plan
 from tradingagents.agents.structured import (
     NO_EXTERNAL_TOOLS,
@@ -17,6 +21,17 @@ def create_research_manager(llm):
     def research_manager_node(state) -> dict:
         instrument_context = get_instrument_context_from_state(state)
         history = state["investment_debate_state"].get("history", "")
+        # The evidence the debate argued over: a quote from it can be checked
+        # against its source instead of taken on the debater's word.
+        reports = "\n\n".join(
+            f"**{label} report:**\n{report_or_absent(state.get(key, ''), source)}"
+            for label, key, source in (
+                ("Market", "market_report", "market"),
+                ("Sentiment", "sentiment_report", "sentiment"),
+                ("News", "news_report", "news"),
+                ("Fundamentals", "fundamentals_report", "fundamentals"),
+            )
+        )
 
         investment_debate_state = state["investment_debate_state"]
 
@@ -36,6 +51,9 @@ def create_research_manager(llm):
 The debate always contains conflicting arguments; deciding which side is stronger is the job, so conflict alone is not a reason to Hold. Commit to the side with the stronger case, sized by how decisively it wins. Choose Hold only when the evidence is still balanced after that weighing, or too thin to support a call; do not manufacture a direction to appear decisive. Weigh the bull and bear cases on their merits, independent of which side spoke first or last.
 
 ---
+
+**Analyst reports** (what the debate drew on; check quoted figures against these and the fact sheet):
+{reports}
 
 **Debate History:**
 {history}

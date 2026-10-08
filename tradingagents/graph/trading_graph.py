@@ -3,7 +3,7 @@ import json
 import logging
 import os
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -179,7 +179,7 @@ class TradingAgentsGraph:
 
     def propagate(self, company_name, trade_date, asset_type: str = "stock", portfolio=None,
                   on_progress=None, callbacks: list | None = None,
-                  extra_sentiment_blocks: list | None = None):
+                  extra_sentiment_blocks: list | None = None, run_started_at: str | None = None):
         """Run the trading agents graph for a company on a specific date.
 
         ``asset_type`` selects between the stock pipeline (default) and the
@@ -208,6 +208,9 @@ class TradingAgentsGraph:
 
         ``extra_sentiment_blocks``: ``(source_name, block_text)`` pairs from
         user-connected sources, fetched by the caller before the run.
+
+        ``run_started_at``: UTC ISO time the run started, for the fact sheet's
+        session clock (defaults to now).
         """
         trade_date = _validate_trade_date(trade_date)
 
@@ -217,7 +220,7 @@ class TradingAgentsGraph:
                 company_name, trade_date, asset_type=asset_type,
                 checkpoint_thread_id=thread_id_value, portfolio=portfolio,
                 on_progress=on_progress, callbacks=callbacks,
-                extra_sentiment_blocks=extra_sentiment_blocks,
+                extra_sentiment_blocks=extra_sentiment_blocks, run_started_at=run_started_at,
             )
 
     def begin_checkpoint(self, company_name, trade_date, asset_type: str = "stock", portfolio=None) -> str | None:
@@ -322,13 +325,14 @@ class TradingAgentsGraph:
         return Path(self.config["results_dir"]) / "reports" / f"{safe_ticker_component(ticker)}_{stamp}"
 
     def create_run_state(self, company_name, trade_date, asset_type: str = "stock", portfolio=None,
-                         extra_sentiment_blocks: list | None = None):
+                         extra_sentiment_blocks: list | None = None, run_started_at: str | None = None):
         """Build a run's initial state; propagate() and the CLI both start here.
 
         Injects the resolved instrument identity for every agent (#814). The
         memory log's lessons are not here: the graph's Memory Log step settles
         and loads them alongside the analysts (see ``_memory_step``).
         """
+        sheet, sheet_text = self.build_fact_sheet(company_name, trade_date, asset_type, run_started_at)
         return self.propagator.create_initial_state(
             company_name,
             trade_date,
@@ -336,7 +340,25 @@ class TradingAgentsGraph:
             instrument_context=self.resolve_instrument_context(company_name, asset_type, trade_date),
             portfolio_context=portfolio.render(company_name) if portfolio is not None else "",
             extra_sentiment_blocks=extra_sentiment_blocks,
+            fact_sheet=sheet,
+            fact_sheet_text=sheet_text,
         )
+
+    def build_fact_sheet(self, company_name, trade_date, asset_type: str = "stock",
+                         run_started_at: str | None = None) -> tuple[dict | None, str]:
+        """The run's fact sheet (REPORT_QUALITY_PLAN R4) when ``config["fact_sheet"]``
+        is on: (sheet as JSON, prompt text). Off, or on any failure: (None, "")."""
+        if not self.config.get("fact_sheet"):
+            return None, ""
+        try:
+            from tradingagents.quality import facts
+
+            started = run_started_at or datetime.now(UTC).isoformat(timespec="seconds")
+            sheet = facts.build(company_name, str(trade_date), started, asset_type)
+            return sheet.model_dump(mode="json"), facts.render(sheet)
+        except Exception as exc:  # noqa: BLE001 — the run goes on without it
+            logger.warning("fact sheet for %s failed: %s", company_name, exc, exc_info=True)
+            return None, ""
 
     def _memory_step(self, state):
         """The graph's Memory Log step, alongside the analysts (#1428): settle every
@@ -405,11 +427,11 @@ class TradingAgentsGraph:
     def _run_graph(self, company_name, trade_date, asset_type: str = "stock",
                    checkpoint_thread_id: str | None = None, portfolio=None,
                    on_progress=None, callbacks: list | None = None,
-                   extra_sentiment_blocks: list | None = None):
+                   extra_sentiment_blocks: list | None = None, run_started_at: str | None = None):
         """Execute the graph and write the resulting state to disk and memory log."""
         init_agent_state = self.create_run_state(
             company_name, trade_date, asset_type, portfolio,
-            extra_sentiment_blocks=extra_sentiment_blocks,
+            extra_sentiment_blocks=extra_sentiment_blocks, run_started_at=run_started_at,
         )
         args = self.propagator.get_graph_args(callbacks=callbacks)
 
@@ -443,13 +465,15 @@ class TradingAgentsGraph:
         if digest_llm is not None and self.config.get("report_digest", True):
             from tradingagents.quality.technicals import computed_context
 
+            # The fact sheet when the run has one; else (sheet off) the R0 price facts.
+            anchor = final_state.get("fact_sheet_text") or computed_context(
+                final_state.get("company_of_interest") or company_name, str(trade_date)
+            )
             final_state["report_digest"] = generate_report_digest(
                 digest_llm,
                 final_state,
                 callbacks=callbacks,
-                computed_context=computed_context(
-                    final_state.get("company_of_interest") or company_name, str(trade_date)
-                ),
+                computed_context=anchor,
             )
 
         self.record_decision(company_name, trade_date, final_state)

@@ -179,12 +179,19 @@ def get_instrument_context_from_state(state: Mapping[str, Any]) -> str:
     consumer is never forced to make a yfinance call mid-graph.
     """
     context = state.get("instrument_context")
-    if isinstance(context, str) and context.strip():
-        return context
-    return build_instrument_context(
-        str(state["company_of_interest"]),
-        state.get("asset_type", "stock"),
-    )
+    if not (isinstance(context, str) and context.strip()):
+        context = build_instrument_context(
+            str(state["company_of_interest"]),
+            state.get("asset_type", "stock"),
+        )
+    # The fact sheet (REPORT_QUALITY_PLAN R4) rides with the identity, so every
+    # stage that knows what it is analysing also has every figure it may use.
+    sheet = state.get("fact_sheet_text")
+    if isinstance(sheet, str) and sheet.strip():
+        from tradingagents.quality.prompts import fact_sheet_block
+
+        context += fact_sheet_block(sheet)
+    return context
 
 
 def report_or_absent(text: str, source: str) -> str:

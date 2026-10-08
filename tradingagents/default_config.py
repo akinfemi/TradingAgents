@@ -130,6 +130,11 @@ def build_default_config() -> dict:
         # distills the transcripts into the summary report surfaces render.
         # Optional decoration: a failure never fails the run.
         "report_digest": True,
+        # The fact sheet (tickeragent.ai, REPORT_QUALITY_PLAN R4): every figure
+        # a stage may use, computed in code from SEC filings and the run's
+        # prices, given to every stage with a cite-by-key rule. Off by default
+        # (network at run start); the platform turns it on.
+        "fact_sheet": False,
         # Output language for analyst reports and final decision
         # Internal agent debate stays in English for reasoning quality
         "output_language": "English",

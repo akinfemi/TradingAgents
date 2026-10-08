@@ -94,6 +94,8 @@ TOOLS_CATEGORIES = {
 OPTIONAL_CATEGORIES = {"macro_data", "prediction_markets"}
 
 # Mapping of methods to their vendor-specific implementations
+from tradingagents.quality.edgar_ext import get_fundamentals_overview as get_fact_sheet_overview  # noqa: E402
+
 VENDOR_METHODS = {
     # core_stock_apis
     "get_stock_data": {
@@ -108,6 +110,8 @@ VENDOR_METHODS = {
     # fundamental_data
     "get_fundamentals": {
         "alpha_vantage": get_alpha_vantage_fundamentals,
+        # tickeragent.ai: the fact sheet is the overview (EDGAR only, R4).
+        "fact_sheet": get_fact_sheet_overview,
         "yfinance": get_yfinance_fundamentals,
     },
     "get_balance_sheet": {

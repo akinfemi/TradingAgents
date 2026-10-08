@@ -19,6 +19,8 @@ class Propagator:
         instrument_context: str = "",
         portfolio_context: str = "",
         extra_sentiment_blocks: list | None = None,
+        fact_sheet: dict | None = None,
+        fact_sheet_text: str = "",
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -33,6 +35,8 @@ class Propagator:
             "company_of_interest": company_name,
             "asset_type": asset_type,
             "instrument_context": instrument_context,
+            "fact_sheet": fact_sheet,
+            "fact_sheet_text": fact_sheet_text,
             "trade_date": str(trade_date),
             "past_context": past_context,
             "memory_note": "",
