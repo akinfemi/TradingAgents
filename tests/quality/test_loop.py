@@ -244,3 +244,20 @@ def test_a_billing_error_is_not_retried():
     with pytest.raises(RuntimeError, match="credit balance"):
         editor.review(Broke(), state(), {"flags": []}, budget_seconds=600, sleep=lambda _s: None)
     assert Broke.calls == 1
+
+
+@pytest.mark.unit
+def test_a_levels_flag_reruns_from_the_trader_keeping_the_debate():
+    graph = FakeGraph([state(), state()])
+    loop.run_with_quality(graph, "ONDS", "2026-10-05", None,
+                          review_fn=review_with({"decision_flags": ["stop sits inside the entry zone"]}, {}))
+    kept = graph.calls[1]["revision"]["kept"]
+    assert "research" in kept and "trader" not in kept
+
+
+@pytest.mark.unit
+def test_a_rating_flag_reruns_the_debate():
+    graph = FakeGraph([state(), state()])
+    loop.run_with_quality(graph, "ONDS", "2026-10-05", None,
+                          review_fn=review_with({"decision_flags": ["rating not supported by the evidence"]}, {}))
+    assert "research" not in graph.calls[1]["revision"]["kept"]

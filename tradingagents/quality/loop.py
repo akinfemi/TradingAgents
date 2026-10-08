@@ -30,6 +30,16 @@ VERSION = 1
 _DECIDING = re.compile(r"^(research_manager|rm|portfolio_manager|pm|digest)", re.I)
 
 
+# A decision flag about the call itself re-runs the debate and ruling; one
+# about levels (target, stop, exit, sizing) re-runs only the trader and PM
+# (staging ONDS, 2026-10-08: a stop placement re-ran the whole debate).
+_ABOUT_THE_CALL = re.compile(r"\b(rating|thesis|call|evidence|direction|bull|bear|debate|ruling)\b", re.I)
+
+
+def _flag_source(flag: str) -> str:
+    return "research_manager" if _ABOUT_THE_CALL.search(flag) else "trader"
+
+
 def _load_bearing(lint: dict) -> list[dict]:
     return [f for f in lint.get("flags") or [] if f.get("severity") == "load_bearing"]
 
@@ -92,9 +102,9 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
             all_errata,
             errata.from_lint(open_flags),
             errata.from_editor(unpatched),
-            [{"severity": "load_bearing", "kind": "decision_flag", "source": "research_manager",
-              "field": "rating", "quote": flag, "problem": flag,
-              "correct": "re-weigh the evidence with the errata and re-derive the call"} for flag in review["decision_flags"]],
+            [{"severity": "load_bearing", "kind": "decision_flag", "source": _flag_source(flag),
+              "field": "decision", "quote": flag, "problem": flag,
+              "correct": "fix this in the decision and restate the corrected value"} for flag in review["decision_flags"]],
         )
         all_errata = new
         rerun, first_later = errata.restart_group(all_errata)
