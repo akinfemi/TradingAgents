@@ -56,6 +56,8 @@ def create_portfolio_manager(llm):
 
 **Valuation:** derive the price target from the fact sheet, never assert it. Pick one method the figures support (EV/Sales on TTM or run-rate revenue for a company without stable earnings; P/E on TTM EPS where earnings are stable and positive), state the multiple you apply and why (relative to the current multiple on the fact sheet), and show the arithmetic from cited keys to the per-share target: enterprise value, plus cash and short-term investments, minus debt, divided by cover-page shares. Give bear and bull case values with the same method and different stated assumptions. The rating's direction and the target must agree (a buy-side rating has a target above the price; a sell-side one below). If the figures can't support a target, leave it empty and say why.
 
+{"**This is a revision.** The review errata at the top list what failed review. Fix every item that concerns the decision (the rating, target, stop, exit or sizing): restate each corrected value explicitly, and do not repeat a figure the errata mark wrong." if state.get("review_errata") else ""}
+
 **Rating Scale** (use exactly one):
 - **Buy**: Strong conviction to enter or add to position
 - **Overweight**: Favorable outlook, gradually increase exposure

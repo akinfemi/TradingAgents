@@ -15,6 +15,7 @@ unchecked.
 from __future__ import annotations
 
 import logging
+import re
 
 from tradingagents.quality import editor, errata
 from tradingagents.quality.lint import Facts, lint_state
@@ -25,6 +26,8 @@ MAX_REVISIONS = 2
 ANALYST_REPORT_KEYS = {"market": "market_report", "social": "sentiment_report", "news": "news_report",
                        "fundamentals": "fundamentals_report"}
 VERSION = 1
+# Stages whose problems can force a revision: what a reader sees and acts on.
+_DECIDING = re.compile(r"^(research_manager|rm|portfolio_manager|pm|digest)", re.I)
 
 
 def _load_bearing(lint: dict) -> list[dict]:
@@ -64,9 +67,10 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
             final_state["report_digest"] = patched
         relint = lint_state(final_state)
         open_flags = _load_bearing(relint)
-        editor_lb = [f for f in review["findings"] if f.get("severity") == "load_bearing"]
-        # A load-bearing finding the editor fixed in the digest is closed by its
-        # patch; one in the transcript or decision still needs a revision.
+        editor_lb = [f for f in review["findings"] if f.get("severity") == "load_bearing"
+                     and _DECIDING.match(str((f.get("location") or {}).get("stage", "")))]
+        # Only the ruling, the decision and the digest can force a revision; a
+        # digest finding the patch fixed is closed by it.
         unpatched = [f for f in editor_lb if not str((f.get("location") or {}).get("stage", "")).startswith("digest")
                      or not applied]
         note = review.get("editor_note") or note

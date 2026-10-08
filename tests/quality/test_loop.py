@@ -70,14 +70,23 @@ def test_a_decision_flag_revises_from_the_research_stage_keeping_the_analysts():
 
 
 @pytest.mark.unit
-def test_an_analyst_error_reruns_that_analyst_only():
-    graph = FakeGraph([state(), state()])
+def test_an_analyst_only_finding_does_not_force_a_revision():
+    """R7 calibration: problems a reader never sees (an analyst's report the
+    ruling and decision don't rely on) are minor, not a revision."""
+    graph = FakeGraph([state()])
     finding = {"severity": "load_bearing", "location": {"stage": "market_analyst", "field": "market_report",
                                                        "quote": WRONG_MARKET}, "problem": "revenue misread"}
-    loop.run_with_quality(graph, "ONDS", "2026-10-05", None, review_fn=review_with({"findings": [finding]}, {}))
-    kept = graph.calls[1]["revision"]["kept"]
-    assert "market" not in kept and {"social", "news", "fundamentals"} <= set(kept)
-    assert "research" not in kept  # everything after the analysts re-runs
+    final, _ = loop.run_with_quality(graph, "ONDS", "2026-10-05", None, review_fn=review_with({"findings": [finding]}))
+    assert final["quality"]["status"] == "clean" and len(graph.calls) == 1
+
+
+@pytest.mark.unit
+def test_an_erratum_sourced_in_one_analyst_reruns_only_that_analyst():
+    errs = [{"severity": "load_bearing", "source": "market_analyst", "also_in": []}]
+    rerun, first_later = errata.restart_group(errs)
+    assert rerun == {"market"} and first_later == "research"
+    kept = errata.kept_outputs(state(), rerun, first_later, loop.ANALYST_REPORT_KEYS)
+    assert "market" not in kept and {"social", "news", "fundamentals"} <= set(kept) and "research" not in kept
 
 
 @pytest.mark.unit

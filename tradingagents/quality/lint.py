@@ -218,6 +218,64 @@ def _matches_fact(fig: Figure, f: dict) -> bool:
     return target is not None and _matches_value(fig, target)
 
 
+def _derivable(fig: Figure, values: list[float], multiples: list[float] = ()) -> bool:
+    """Whether ``fig`` is arithmetic on ``values``: a signed sum of two to four
+    of them, or a product or quotient of two. The stages are told to derive
+    figures from cited keys ("equity $1.57B less goodwill $661M less
+    intangibles $583M = $325M"); such a result is on no sheet by definition."""
+    from itertools import combinations, product
+
+    # Callers put the figure's own sentence first; keep the nearest values.
+    seen: list[float] = []
+    for v in values:
+        if isinstance(v, (int, float)) and v and v not in seen:
+            seen.append(v)
+    vals = seen[:8]
+    for n in range(2, min(4, len(vals)) + 1):
+        for combo in combinations(vals, n):
+            for signs in product((1, -1), repeat=n - 1):
+                if _matches_value(fig, combo[0] + sum(sg * v for sg, v in zip(signs, combo[1:], strict=True))):
+                    return True
+    for a, b in combinations(vals, 2):
+        for x in (a * b, a / b, b / a):
+            if _matches_value(fig, x):
+                return True
+    # A multiple applied to a figure ("13x × $174.1M TTM revenue = $2,263M").
+    return any(_matches_value(fig, v * m) for v in vals for m in multiples if m)
+
+
+def _context_values(text: str, fig: Figure, facts: Facts) -> list[float]:
+    """Values ``fig`` may be derived from: its own sentence first, then the
+    text just before it (a result is often stated a sentence after its
+    inputs: "…$49.3B. That is a fall of $23.65B")."""
+    before = text[max(0, fig.start - 300): fig.start]
+    nearest_first = [g.value for g in reversed(figures(before)) if g.kind == fig.kind]
+    cited = [v for k in reversed(_CITE.findall(before)) if (v := _fact_as(facts.get(k) or {}, fig.kind)) is not None]
+    return _sentence_values(fig.sentence, facts, fig.kind, fig) + nearest_first + cited
+
+
+def _multiples(context: str) -> list[float]:
+    return [g.value for g in figures(context) if g.kind == "x"]
+
+
+def _sentence_values(sentence: str, facts: Facts, kind: str, exclude: Figure | None = None) -> list[float]:
+    """Values a figure in ``sentence`` can be derived from: the facts cited in
+    it (in the figure's unit) and the other figures written beside it."""
+    out = [_fact_as(facts.get(k), kind) for k in _CITE.findall(sentence) if facts.get(k)]
+    out = [v for v in out if v is not None]
+    out += [g.value for g in figures(sentence) if g.kind == kind and (exclude is None or g.raw != exclude.raw)]
+    # Per-share results divide by a share count, which is not a money figure.
+    if kind == "usd":
+        out += [float(f["value"]) for k in _CITE.findall(sentence) if (f := facts.get(k)) and f.get("unit") == "shares"]
+    return out
+
+
+# A figure the text itself marks as not from the filings (R7: the RM lists
+# news figures as unverified) is a disclosure, not a claim.
+_LABELLED_UNVERIFIED = re.compile(r"\b(unverified|not on the fact sheet|headline[- ]only|not verified|"
+                                  r"cannot be verified|per (?:the )?news|reported by)\b", re.I)
+
+
 # ---- checks ----------------------------------------------------------------------------------
 
 
@@ -239,8 +297,10 @@ def check_numbers(text: str, facts: Facts, stage: str, field_name: str) -> list[
         if known and not any(_matches_fact(fig, facts.get(k)) for k in known):
             # Keys of another unit (a % cited after a $ figure) don't contradict it.
             comparable = [k for k in known if _fact_as(facts.get(k), fig.kind) is not None]
-            # A sum of cited keys ("$741.5M ([F:a]+[F:b])").
-            if len(comparable) > 1 and _matches_value(fig, sum(_fact_as(facts.get(k), fig.kind) for k in comparable)):
+            # Arithmetic on the cited keys ("$741.5M ([F:a]+[F:b])", "fell $1.43B
+            # [F:cash_sti.2026Q1][F:cash_sti.2026Q2]", "$7.41 (market cap ÷ shares)").
+            if _derivable(fig, _context_values(text, fig, facts),
+                          _multiples(text[max(0, fig.start - 300): fig.end + 60])):
                 continue
             # A citation placed at the end of a sentence may belong to another
             # figure in it ("$83.8M in Q2, with $221M in orders [F:revenue.2026Q2]").
@@ -264,6 +324,11 @@ def unsupported_figures(text: str, facts: Facts, stage: str, field_name: str) ->
         if fig.keys or fig.kind != "usd" or abs(fig.value) < 1e6:
             continue
         if any(_matches_fact(fig, f) for f in numeric):
+            continue
+        if _LABELLED_UNVERIFIED.search(fig.sentence):
+            continue
+        if _derivable(fig, _context_values(text, fig, facts),
+                      _multiples(text[max(0, fig.start - 300): fig.end + 60])):
             continue
         flags.append(LintFlag(_severity(field_name, "unsupported"), "unsupported", stage, field_name,
                               fig.sentence[:300], "not on the fact sheet and not cited"))
@@ -349,7 +414,8 @@ _MA_SIDE = re.compile(
     r"(?:moving\s+average|SMA|EMA|MA)\b",
     re.I,
 )
-_HEDGES = re.compile(r"\b(if|would|could|should|unless|risk of|watch for|a break|breaks?|fall|falls|falling|"
+_HEDGES = re.compile(r"\b(wrong|incorrect|false|misread|not supported|refuted?|"
+                     r"if|would|could|should|unless|risk of|watch for|a break|breaks?|fall|falls|falling|"
                      r"drop|drops|reclaim|reclaims|until|when|previous|prior|earlier|before|not|nor|neither|"
                      r"approaching|threshold|potential|stop|stop-loss|target|entry|level)\b|[<>]", re.I)
 # Whose position "above/below the 50-day" describes: the price, not a stop or a target.
@@ -438,7 +504,8 @@ _POLICY = [
 ]
 # Saying the data is NOT used is fine ("short interest is not available").
 _POLICY_NEGATED = re.compile(r"\b(not\s+(?:available|used|provided|cited|considered)|unavailable|"
-                             r"no\s+(?:data|figures?)\s+on|excluded|missing)\b", re.I)
+                             r"no\s+(?:data|figures?)\s+on|excluded|missing|do\s+not\s+use|don't\s+use|"
+                             r"never\s+use|not\s+to\s+use|without\s+using|may\s+not\s+be\s+used|avoid)\b", re.I)
 
 
 def check_policy(text: str, stage: str, field_name: str) -> list[LintFlag]:

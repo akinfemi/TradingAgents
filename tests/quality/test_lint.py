@@ -164,3 +164,25 @@ def test_an_unverified_social_claim_cannot_carry_a_load_bearing_point(sheet):
     text = "A $50M order from the Army (unverified social claim, n=1) underpins the bull case."
     assert "social_claim" in {f.kind for f in lint_text(text, sheet, "digest", "digest.bull_thesis") if f.blocking}
     assert "social_claim" not in {f.kind for f in lint_text(text, sheet, "sentiment_analyst", "sentiment_report")}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text", [
+    # R7 staging/eval: correct derivations the RM and PM were told to make.
+    "Tangible equity: equity of $1.57B [F:equity.2026Q2] less goodwill of $661.4M [F:goodwill.2026Q2] less "
+    "intangibles of $583.3M [F:intangibles.2026Q2] is about $325M.",
+    "Base: 13x × $174.1M TTM revenue [F:ttm_revenue.2026Q2] = $2,263M EV.",
+    "Cash was $657.9M [F:cash.2026Q2] and short-term investments $726.6M [F:sti.2026Q2]. Together that is $1,384.5M.",
+    "The $56M European order is headline-only and unverified; do not size on it.",
+    "Do not use short-interest data, consensus estimates or price targets in sizing.",
+    "The bull's 'deeply oversold base': wrong.",
+])
+def test_derivations_and_compliance_are_clean(sheet, text):
+    blocking = [f for f in lint_text(text, sheet, "research_manager", "rm") if f.blocking or f.severity == "load_bearing"]
+    assert blocking == [], [(f.kind, f.quote[:60]) for f in blocking]
+
+
+@pytest.mark.unit
+def test_a_wrong_derivation_is_still_caught(sheet):
+    text = "Tangible equity: equity of $1.57B [F:equity.2026Q2] less goodwill [F:goodwill.2026Q2] is about $1.30B."
+    assert [f.kind for f in lint_text(text, sheet, "research_manager", "rm") if f.severity == "load_bearing"]

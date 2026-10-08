@@ -24,7 +24,7 @@ from tradingagents.quality.lint import Facts, lint_text, stage_texts
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_ROUNDS = 16
+MAX_TOOL_ROUNDS = 10
 RETRY_BUDGET_SECONDS = 600  # plan: retry with backoff for up to 10 minutes, then hold
 
 
@@ -130,7 +130,8 @@ Check every load-bearing figure and attribution: the digest headline, bull and b
 Then submit the review with `submit_review`:
 - findings: every problem, with severity load_bearing when it sits in a load-bearing place or changes the argument, else minor; location {stage, field, quote} quoting the text exactly; the problem; the correction (with fact keys).
 - digest_patch: field-level replacements or deletions that fix load-bearing digest text. Replace only with text whose every figure you checked; delete when the claim cannot be fixed. Never touch the rating.
-- decision_flags: problems you may not fix yourself and that need the deciding stages re-run, e.g. "rating not supported by the evidence", "price target not derived", "thesis rests on a misread figure".
+- decision_flags: at most three, and only for problems that change the rating, the price target, the stop or the exit and that you may not fix yourself, e.g. "rating not supported by the evidence", "price target not derived", "stop sits inside the entry zone". Not for wording, completeness of optional fields, or anything the reader-facing digest already gets right. `time_horizon` is a legacy field that is always empty by design (the 3-month rating horizon is fixed); never flag it.
+- Severity: load_bearing only for problems in the ruling, the portfolio manager's decision or the digest (what a reader sees and acts on). A problem in an analyst report or a debate turn that the ruling and decision do not rely on is minor.
 - editor_note: at most three short lines for the reader about what the review changed, empty if nothing.
 - hold_reason: one line explaining why the report should not be published if it could not be fixed, else empty.
 
@@ -166,7 +167,10 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None) -> dict:
     from langchain_core.messages import HumanMessage, ToolMessage
 
     bound = llm.bind_tools(TOOLS)
-    messages = [HumanMessage(content=prompt)]
+    # The ~50K-token brief and record are re-sent on every tool round; cached,
+    # repeats bill at a fraction of the input price (staging eval, 2026-10-08:
+    # 14 rounds, 737K input tokens for one review).
+    messages = [HumanMessage(content=[{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}])]
     for _ in range(MAX_TOOL_ROUNDS):
         reply = bound.invoke(messages, config={"callbacks": callbacks or []})
         messages.append(reply)
