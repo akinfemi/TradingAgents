@@ -22,6 +22,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import RUNS_DIR, golden_set, load_env, platform_config  # noqa: E402
 
 
+def _call_recorder():
+    """A callback that keeps every LLM call's graph node, model and tokens, so
+    cost can be split by tier when both tiers run one model, and priced per
+    request where a model's price depends on prompt length (Haiku 5.5)."""
+    import threading
+
+    from langchain_core.callbacks import BaseCallbackHandler
+
+    class CallRecorder(BaseCallbackHandler):
+        def __init__(self):
+            self.calls, self._nodes, self._lock = [], {}, threading.Lock()
+
+        def on_chat_model_start(self, serialized, messages, *, run_id, metadata=None, **kwargs):
+            with self._lock:
+                self._nodes[run_id] = (metadata or {}).get("langgraph_checkpoint_ns") or (metadata or {}).get("langgraph_node")
+
+        def on_llm_end(self, response, *, run_id, **kwargs):
+            try:
+                message = response.generations[0][0].message
+            except (IndexError, AttributeError, TypeError):
+                return
+            usage = getattr(message, "usage_metadata", None) or {}
+            meta = getattr(message, "response_metadata", None) or {}
+            with self._lock:
+                self.calls.append({
+                    "node": self._nodes.pop(run_id, None),
+                    "model": meta.get("model_name") or meta.get("model"),
+                    "tokens_in": usage.get("input_tokens", 0),
+                    "tokens_out": usage.get("output_tokens", 0),
+                })
+
+    return CallRecorder()
+
+
 def run_one(ticker: str, trade_date: str, out_dir: Path, base_config: dict) -> dict:
     import common  # noqa: F401  (puts server/ on sys.path in the child process)
 
@@ -35,9 +69,19 @@ def run_one(ticker: str, trade_date: str, out_dir: Path, base_config: dict) -> d
     config["results_dir"] = str(out_dir / "results")
     config["data_cache_dir"] = str(out_dir / "cache")
     stats = StatsCallbackHandler()
+    recorder = _call_recorder()
     started = time.monotonic()
     graph = TradingAgentsGraph(selected_analysts=["market", "social", "news", "fundamentals"], config=config)
-    final_state, rating = graph.propagate(ticker, trade_date, callbacks=[stats])
+    if config.get("quality_loop"):
+        # R6: judge what would publish — gates, the editor and revisions.
+        from tradingagents.quality.editor import create_editor_llm
+        from tradingagents.quality.loop import run_with_quality
+
+        final_state, rating = run_with_quality(graph, ticker, trade_date,
+                                               create_editor_llm(config, [stats, recorder]),
+                                               callbacks=[stats, recorder])
+    else:
+        final_state, rating = graph.propagate(ticker, trade_date, callbacks=[stats, recorder])
     elapsed = time.monotonic() - started
     graph.save_reports(final_state, ticker, save_path=out_dir / "reports", html=False)
     record = {
@@ -50,6 +94,10 @@ def run_one(ticker: str, trade_date: str, out_dir: Path, base_config: dict) -> d
         "tokens_in": stats.tokens_in,
         "tokens_out": stats.tokens_out,
         "llm_calls": stats.llm_calls,
+        "calls": recorder.calls,
+        # R6: the review's verdict (clean, revised, held) and how many passes.
+        "quality_status": (final_state.get("quality") or {}).get("status"),
+        "revisions": max(0, len((final_state.get("quality") or {}).get("passes") or []) - 1),
         "state": final_state,
     }
     (out_dir / "run.json").write_text(json.dumps(record, default=str, indent=1), encoding="utf-8")

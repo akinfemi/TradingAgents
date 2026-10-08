@@ -45,7 +45,14 @@ def _supports_effort(model: str) -> bool:
 # Models that reject a forced tool choice (``tool_choice`` "any"/"tool") with a
 # 400. LangChain's default structured output forces the schema tool, so these
 # take Anthropic's native JSON-schema output instead (tickeragent.ai).
-_NO_FORCED_TOOL = re.compile(r"^claude-(opus-5-5|sonnet-5-5|fable-5-1|mythos-5-1)(?:$|[-@:])")
+# Haiku 5.5 accepts a forced tool but then answers without thinking, so it
+# takes the same native path as the other 5.5 models.
+_NO_FORCED_TOOL = re.compile(r"^claude-(opus-5-5|sonnet-5-5|haiku-5-5|fable-5-1|mythos-5-1)(?:$|[-@:])")
+
+
+# Documented max output for models langchain-anthropic has no profile for; it
+# would otherwise default to 4096 tokens, which thinking alone can use up.
+_MAX_OUTPUT_TOKENS = {"claude-haiku-5-5": 128000}
 
 
 def rejects_forced_tool_choice(model: str) -> bool:
@@ -116,6 +123,8 @@ class AnthropicClient(BaseLLMClient):
             if key == "effort" and not _supports_effort(self.model):
                 continue
             llm_kwargs[key] = self.kwargs[key]
+        if "max_tokens" not in llm_kwargs and self.model.lower() in _MAX_OUTPUT_TOKENS:
+            llm_kwargs["max_tokens"] = _MAX_OUTPUT_TOKENS[self.model.lower()]
 
         return NormalizedChatAnthropic(**llm_kwargs)
 

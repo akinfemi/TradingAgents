@@ -72,6 +72,11 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
         note = review.get("editor_note") or note
         passes.append({"pass": attempt, "lint": lint, "editor": review, "patch_applied": applied,
                        "relint": relint, "open": len(open_flags), "decision_flags": review["decision_flags"]})
+        forced = (getattr(graph, "config", None) or {}).get("quality_force_hold_ticker") or ""
+        if forced and forced.upper() == str(ticker).upper():
+            # Staging test hook: exercise the hold and release path.
+            status, hold_reason = "held", "forced hold for testing (quality_force_hold_ticker)"
+            break
         if not open_flags and not review["decision_flags"] and not unpatched:
             status = "clean" if attempt == 0 else "revised"
             break

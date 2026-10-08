@@ -62,7 +62,7 @@ def platform_config() -> dict:
         _env_file=None,
         llm_provider=os.environ.get("LLM_PROVIDER", "anthropic"),
         deep_think_llm=os.environ.get("DEEP_THINK_LLM", "claude-sonnet-5"),
-        quick_think_llm=os.environ.get("QUICK_THINK_LLM", "claude-haiku-4-5"),
+        quick_think_llm=os.environ.get("QUICK_THINK_LLM", "claude-haiku-5-5"),
         price_vendor=os.environ.get("PRICE_VENDOR", "yfinance"),
     )
     config = dict(DEFAULT_CONFIG)

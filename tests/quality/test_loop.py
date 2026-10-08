@@ -207,3 +207,14 @@ def test_the_graph_compiles_with_the_loop():
     graph = GraphSetup(MagicMock(), MagicMock(), ConditionalLogic(), 3, quality_gates=True,
                        quality_loop=True).setup_graph(("market", "news")).compile()
     assert "Market Analyst Check" in graph.get_graph().nodes
+
+
+@pytest.mark.unit
+def test_the_staging_hook_holds_only_its_ticker():
+    graph = FakeGraph([state()])
+    graph.config = {"quality_force_hold_ticker": "ONDS"}
+    final, _ = loop.run_with_quality(graph, "onds", "2026-10-05", None, review_fn=review_with({}))
+    assert final["quality"]["status"] == "held" and "forced hold" in final["quality"]["hold_reason"]
+    other = FakeGraph([state()])
+    other.config = {"quality_force_hold_ticker": "KO"}
+    assert loop.run_with_quality(other, "ONDS", "2026-10-05", None, review_fn=review_with({}))[0]["quality"]["status"] == "clean"
