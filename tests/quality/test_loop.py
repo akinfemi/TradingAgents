@@ -63,9 +63,10 @@ def test_a_decision_flag_revises_from_the_research_stage_keeping_the_analysts():
         review_fn=review_with({"decision_flags": ["price target not derived"]}, {"editor_note": "Target re-derived."}))
     assert final["quality"]["status"] == "revised"
     revision = graph.calls[1]["revision"]
-    assert set(revision["kept"]) == {"market", "social", "news", "fundamentals"}
+    # A target is a levels issue: the trader and PM re-run, the debate is kept.
+    assert set(revision["kept"]) == {"market", "social", "news", "fundamentals", "research"}
     assert "price target not derived" in revision["review_errata"]
-    assert final["quality"]["passes"][0]["restart"]["from"] == "research"
+    assert final["quality"]["passes"][0]["restart"]["from"] == "trader"
     assert final["quality"]["editor_note"] == "Target re-derived."
 
 
