@@ -54,7 +54,8 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
     revision = None
     status, hold_reason, note = "held", "", ""
     final_state, rating = {}, None
-    for attempt in range(MAX_REVISIONS + 1):
+    max_revisions = int((getattr(graph, "config", None) or {}).get("quality_max_revisions", MAX_REVISIONS))
+    for attempt in range(max_revisions + 1):
         final_state, rating = graph.propagate(ticker, trade_date, on_progress=on_progress, callbacks=callbacks,
                                               revision=revision, record=False, **propagate_kwargs)
         if not final_state.get("fact_sheet"):
@@ -94,9 +95,10 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
         if not open_flags and not review["decision_flags"] and not unpatched:
             status = "clean" if attempt == 0 else "revised"
             break
-        if attempt == MAX_REVISIONS:
+        if attempt == max_revisions:
             status = "held"
-            hold_reason = review.get("hold_reason") or "load-bearing errors remained after two revisions"
+            hold_reason = review.get("hold_reason") or (
+                f"load-bearing errors remained after {max_revisions} revision{'s' if max_revisions != 1 else ''}")
             break
         new = errata.merge(
             all_errata,
