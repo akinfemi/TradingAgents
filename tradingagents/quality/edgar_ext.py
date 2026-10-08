@@ -58,8 +58,10 @@ LINES: list[tuple[str, str, tuple[str, ...]]] = [
     ("stock_for_acquisitions", "flow", ("StockIssuedDuringPeriodValueAcquisitions",)),
     ("shares_weighted", "flow", ("WeightedAverageNumberOfSharesOutstandingBasic",)),
     ("cash", "stock", ("CashAndCashEquivalentsAtCarryingValue",)),
+    # NVIDIA moved from MarketableSecuritiesCurrent to DebtSecuritiesCurrent
+    # in fiscal 2027; a missing tag reads as a cash crash (staging, 2026-10-08).
     ("sti", "stock", ("ShortTermInvestments", "AvailableForSaleSecuritiesDebtSecuritiesCurrent",
-                      "MarketableSecuritiesCurrent")),
+                      "MarketableSecuritiesCurrent", "DebtSecuritiesCurrent")),
     ("debt", "stock", ("LongTermDebt", "LongTermDebtNoncurrent", "DebtInstrumentCarryingAmount")),
     ("debt_current", "stock", ("LongTermDebtCurrent", "DebtCurrent")),
     ("derivative_liabilities", "stock", ("DerivativeLiabilities", "DerivativeLiabilitiesNoncurrent")),

@@ -267,7 +267,10 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
         if ocf is not None and capex is not None:
             add(f"fcf.{cal}", ocf - capex, "usd", "free_cash_flow", "operating cash flow − capex", period)
         cash, sti = v("cash", end), v("sti", end)
-        if cash is not None:
+        # Investments tagged in an earlier quarter but not this one is a tag
+        # gap, not money gone: no cash + investments total for this quarter.
+        sti_gap = sti is None and any(v("sti", c.end) is not None for c in cols if c.end < end)
+        if cash is not None and not sti_gap:
             add(f"cash_sti.{cal}", cash + (sti or 0), "usd", "cash_and_short_term_investments",
                 "cash + short-term investments" + ("" if sti is not None else " (none tagged)"), f"at {end}")
         prior = year_ago(end)

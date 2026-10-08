@@ -299,3 +299,17 @@ def test_segments_parse_with_year_ago_change():
 def test_member_names_without_a_label_file():
     assert edgar_ext._humanize("nvda:ComputeAndNetworkingMember") == "Compute and Networking"
     assert edgar_ext._humanize("onds:ProductRevenueMember") == "Product Revenue"
+
+
+@pytest.mark.unit
+def test_a_missing_investments_tag_is_not_a_cash_crash():
+    """Staging NVDA: a renamed tag dropped $39B of investments from one
+    quarter; cash + investments must not be computed for that quarter."""
+    companyfacts = json.loads((FIX / "onds_companyfacts.json").read_text())
+    submissions = json.loads((FIX / "onds_submissions.json").read_text())
+    st = edgar_ext.from_json("0001646188", companyfacts, submissions, "2026-10-05")
+    del st.quarters["sti"]["2026-06-30"]
+    sheet = facts.build("ONDS", "2026-10-05", None, statements=st, ohlcv=pd.read_csv(FIX / "onds_ohlcv.csv"),
+                        offline=True)
+    assert sheet.get("cash_sti.2026Q1") is not None
+    assert sheet.get("cash_sti.2026Q2") is None
