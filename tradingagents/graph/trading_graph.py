@@ -570,6 +570,9 @@ class TradingAgentsGraph:
             "sentiment_structured": final_state.get("sentiment_structured"),
             "portfolio_decision": final_state.get("portfolio_decision"),
             "report_digest": final_state.get("report_digest"),
+            # The fact sheet the stages cited (R4): the report's key numbers
+            # render from it, and the linter checks citations against it.
+            "fact_sheet": final_state.get("fact_sheet"),
         }
 
         # A ticker that would escape the results directory is rejected.

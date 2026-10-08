@@ -194,3 +194,15 @@ def test_every_stage_gets_the_sheet_and_the_cite_rule(onds):
     assert "[F:ev]" in context and CITE_RULE in context
     bare = get_instrument_context_from_state({"company_of_interest": "ONDS", "instrument_context": "x"})
     assert CITE_RULE not in bare
+
+
+@pytest.mark.unit
+def test_the_state_log_keeps_the_fact_sheet(tmp_path):
+    """Staging, 2026-10-08: every stage cited the sheet, but the state log
+    dropped it, so the report could not render the numbers they cited."""
+    from tests.test_cli_display import _bare_graph, _state
+
+    state = {**_state("ONDS"), "fact_sheet": {"version": 1, "facts": [{"key": "ev", "value": 2.75e9}]}}
+    _bare_graph(tmp_path)._log_state("2026-10-05", state)
+    logged = json.loads(next(tmp_path.rglob("full_states_log*.json")).read_text(encoding="utf-8"))
+    assert logged["fact_sheet"]["facts"][0]["key"] == "ev"
