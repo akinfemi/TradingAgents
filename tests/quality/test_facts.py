@@ -56,12 +56,14 @@ def test_quarters_reproduce_appendix_b(onds):
 
 @pytest.mark.unit
 def test_balances_and_share_issuance(onds):
-    assert _m(onds, "cash.2026-06-30") == 657.9
-    assert _m(onds, "sti.2026-06-30") == 726.6
-    assert _m(onds, "derivative_liabilities.2026-06-30") == 1043.7
+    assert _m(onds, "cash.2026Q2") == 657.9
+    assert _m(onds, "sti.2026Q2") == 726.6
+    assert _m(onds, "derivative_liabilities.2026Q2") == 1043.7
+    assert _m(onds, "cash_sti.2026Q2") == 1384.5
+    assert onds.get("cash.2026Q2").period == "at 2026-06-30"
     assert _m(onds, "stock_for_acquisitions.2026Q2") == 509.0
     assert _m(onds, "stock_sold_cash.2026Q1") == 959.1
-    assert onds.get("debt.2026-06-30") is None  # no debt tagged: EV counts 0 and says so
+    assert onds.get("debt.2026Q2") is None  # no debt tagged: EV counts 0 and says so
 
 
 @pytest.mark.unit
@@ -98,6 +100,7 @@ def test_next_earnings_is_estimated_from_last_years_filing(onds):
     assert nxt["status"] == "estimated"
     assert nxt["date"] == "2026-11-12"
     assert nxt["covers"] == "2026Q3"
+    assert onds.value("earnings.next") == "2026-11-12"  # citable, as the render cites it
     assert "2026Q2" in nxt["already_reported"]
 
 

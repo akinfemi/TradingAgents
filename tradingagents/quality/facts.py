@@ -199,8 +199,12 @@ def _statement_facts(st: edgar_ext.Statements, n_show: int) -> tuple[list[Fact],
             v = st.quarters.get(concept, {}).get(col.end)
             if v is None:
                 continue
-            key = f"{concept}.{col.end}" if kind == "stock" else f"{concept}.{col.calendar}"
-            period = col.end if kind == "stock" else col.calendar + (f" ({col.fiscal})" if col.fiscal else "")
+            # One key grammar for every row: <item>.<calendar quarter>. Balances
+            # keep their exact date in ``period`` (staging: agents wrote
+            # cash.2026Q2 for a key that was cash.2026-06-30).
+            key = f"{concept}.{col.calendar}"
+            period = (f"at {col.end}" if kind == "stock"
+                      else col.calendar + (f" ({col.fiscal})" if col.fiscal else ""))
             facts.append(Fact(key=key, value=v.value, unit=_UNIT.get(v.unit, "usd"), period=period,
                               concept=v.tag, source="computed" if v.derivation else "sec_xbrl",
                               derivation=v.derivation, filed=f"{v.filed} {v.accn}".strip()))
@@ -208,7 +212,7 @@ def _statement_facts(st: edgar_ext.Statements, n_show: int) -> tuple[list[Fact],
             v = st.years.get(concept, {}).get(col.end)
             if v is None:
                 continue
-            key = f"{concept}.{col.calendar}" if kind == "flow" else f"{concept}.{col.end}"
+            key = f"{concept}.{col.calendar}"
             if kind == "stock" and any(f.key == key for f in facts):
                 continue
             facts.append(Fact(key=key, value=v.value, unit=_UNIT.get(v.unit, "usd"),
@@ -264,8 +268,8 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
             add(f"fcf.{cal}", ocf - capex, "usd", "free_cash_flow", "operating cash flow − capex", period)
         cash, sti = v("cash", end), v("sti", end)
         if cash is not None:
-            add(f"cash_sti.{end}", cash + (sti or 0), "usd", "cash_and_short_term_investments",
-                "cash + short-term investments" + ("" if sti is not None else " (none tagged)"), end)
+            add(f"cash_sti.{cal}", cash + (sti or 0), "usd", "cash_and_short_term_investments",
+                "cash + short-term investments" + ("" if sti is not None else " (none tagged)"), f"at {end}")
         prior = year_ago(end)
         if prior:
             for concept, key in (("revenue", "revenue_yoy"), ("shares_weighted", "shares_yoy")):
@@ -452,6 +456,12 @@ def build(ticker: str, trade_date: str, run_started_at: str | None = None, asset
             sheet.flags.extend(flags)
             sheet.identity = _identity(st)
             sheet.calendar = {"earnings_next": _next_earnings(st, cols, trade_date)}
+            nxt = sheet.calendar["earnings_next"]
+            if nxt:
+                sheet.facts.append(Fact(
+                    key="earnings.next", value=nxt["date"], unit="date", period=nxt["covers"],
+                    concept="next_earnings_date", source="computed",
+                    derivation=f"{nxt['status']}: {nxt['basis']}"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("fact sheet: statements for %s failed: %s", ticker, exc, exc_info=True)
             sheet.unavailable.append("SEC statements could not be read; no fundamentals figures")
@@ -559,11 +569,11 @@ def render(sheet: FactSheet) -> str:
                 cells.append(_fmt(f) + star)
             if any_value:
                 out.append(f"| {label} [{concept}] | " + " | ".join(cells) + " |")
-        out.append("\nBalances at quarter end (key = <item>.<period end date>):")
-        out.append("| " + " | ".join(["Balance"] + [c.end for c in cols]) + " |")
+        out.append("\nBalances at quarter end (key = <item>.<calendar quarter>):")
+        out.append("| " + " | ".join(["Balance"] + [f"{c.calendar} (at {c.end})" for c in cols]) + " |")
         out.append("|" + "---|" * (len(cols) + 1))
         for concept, label in _BALANCE_ROWS:
-            cells = [_fmt(f) if (f := sheet.get(f"{concept}.{c.end}")) else "—" for c in cols]
+            cells = [_fmt(f) if (f := sheet.get(f"{concept}.{c.calendar}")) else "—" for c in cols]
             if any(c != "—" for c in cells):
                 out.append(f"| {label} [{concept}] | " + " | ".join(cells) + " |")
         if notes:
