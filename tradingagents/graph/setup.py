@@ -108,6 +108,7 @@ class GraphSetup:
         conditional_logic: ConditionalLogic,
         max_tool_rounds: int,
         extra_tools: dict[str, list] | None = None,
+        quality_gates: bool = False,
     ):
         """Initialize with required components.
 
@@ -120,6 +121,9 @@ class GraphSetup:
         self.conditional_logic = conditional_logic
         self.max_tool_rounds = max_tool_rounds
         self.extra_tools = extra_tools or {}
+        # REPORT_QUALITY_PLAN R5: lint every stage against the fact sheet
+        # before the next one reads it (no-op for a run without a sheet).
+        self.quality_gates = quality_gates
 
     def setup_graph(
         self, selected_analysts=("market", "social", "news", "fundamentals"), memory_node=None
@@ -156,12 +160,48 @@ class GraphSetup:
         conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
         portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
 
+        if self.quality_gates:
+            from tradingagents.quality import gates
+
+            quick, deep = self.quick_thinking_llm, self.deep_thinking_llm
+            bull_researcher_node = gates.debate_turn(
+                bull_researcher_node, "bull_researcher", "investment_debate_state", "current_response",
+                "bull_history", quick, "bull researcher")
+            bear_researcher_node = gates.debate_turn(
+                bear_researcher_node, "bear_researcher", "investment_debate_state", "current_response",
+                "bear_history", quick, "bear researcher")
+            aggressive_analyst = gates.debate_turn(
+                aggressive_analyst, "risk_aggressive", "risk_debate_state", "current_aggressive_response",
+                "aggressive_history", quick, "aggressive risk analyst")
+            conservative_analyst = gates.debate_turn(
+                conservative_analyst, "risk_conservative", "risk_debate_state", "current_conservative_response",
+                "conservative_history", quick, "conservative risk analyst")
+            neutral_analyst = gates.debate_turn(
+                neutral_analyst, "risk_neutral", "risk_debate_state", "current_neutral_response",
+                "neutral_history", quick, "neutral risk analyst")
+            trader_node = gates.text_stage(trader_node, "trader", "trader_investment_plan", quick, "trader")
+            research_manager_node = gates.text_stage(
+                research_manager_node, "research_manager", "investment_plan", deep, "research manager", fix=False)
+            portfolio_manager_node = gates.text_stage(
+                portfolio_manager_node, "portfolio_manager", "final_trade_decision", deep, "portfolio manager",
+                fix=False)
+
         workflow = StateGraph(AgentState)
 
+        analyst_exits = []
         for spec in plan.specs:
             workflow.add_node(spec.agent_node,
                               _analyst_graph(spec, analyst_factories[spec.key](), self.max_tool_rounds,
                                              tools=tuple(spec.tools) + extra.get(spec.key, ())))
+            if self.quality_gates:
+                check = f"{spec.agent_node} Check"
+                stage = {"social": "sentiment"}.get(spec.key, spec.key) + "_analyst"
+                workflow.add_node(check, gates.analyst_check(spec.report_key, stage, self.quick_thinking_llm,
+                                                             f"{spec.key} analyst"))
+                workflow.add_edge(spec.agent_node, check)
+                analyst_exits.append(check)
+            else:
+                analyst_exits.append(spec.agent_node)
 
         workflow.add_node("Bull Researcher", bull_researcher_node)
         workflow.add_node("Bear Researcher", bear_researcher_node)
@@ -176,12 +216,14 @@ class GraphSetup:
         # every one of them has filed its report. The memory log settles past
         # decisions alongside them: only the Portfolio Manager reads its lessons.
         first_steps = [spec.agent_node for spec in plan.specs]
+        joins = list(analyst_exits)
         if memory_node is not None:
             workflow.add_node("Memory Log", memory_node)
             first_steps.append("Memory Log")
+            joins.append("Memory Log")
         for node in first_steps:
             workflow.add_edge(START, node)
-        workflow.add_edge(first_steps, "Bull Researcher")
+        workflow.add_edge(joins, "Bull Researcher")
 
         # Both research-debate edges share the complete DEBATE_PATH_MAP (#1088).
         for debate_node in ("Bull Researcher", "Bear Researcher"):

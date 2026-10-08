@@ -191,6 +191,11 @@ def get_instrument_context_from_state(state: Mapping[str, Any]) -> str:
         from tradingagents.quality.prompts import fact_sheet_block
 
         context += fact_sheet_block(sheet)
+    errata = state.get("open_errata")
+    if errata:
+        from tradingagents.quality.gates import render_errata
+
+        context += "\n\n" + render_errata(errata)
     return context
 
 

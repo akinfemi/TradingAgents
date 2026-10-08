@@ -135,6 +135,9 @@ def build_default_config() -> dict:
         # prices, given to every stage with a cite-by-key rule. Off by default
         # (network at run start); the platform turns it on.
         "fact_sheet": False,
+        # Stage gates (tickeragent.ai, R5): lint each stage against the fact
+        # sheet, one fix-up turn on blocking errors, open errata forward.
+        "quality_gates": False,
         # Output language for analyst reports and final decision
         # Internal agent debate stays in English for reasoning quality
         "output_language": "English",

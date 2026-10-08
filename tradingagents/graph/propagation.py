@@ -37,6 +37,8 @@ class Propagator:
             "instrument_context": instrument_context,
             "fact_sheet": fact_sheet,
             "fact_sheet_text": fact_sheet_text,
+            "open_errata": [],
+            "quality_gates": [],
             "trade_date": str(trade_date),
             "past_context": past_context,
             "memory_note": "",

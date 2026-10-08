@@ -1,3 +1,4 @@
+import operator
 from typing import Annotated
 
 from langgraph.graph import MessagesState
@@ -48,6 +49,11 @@ class AgentState(MessagesState):
     instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]
     fact_sheet: Annotated[dict | None, "The run's fact sheet (quality.facts.FactSheet as JSON), built in code at run start"]
     fact_sheet_text: Annotated[str, "The fact sheet rendered for prompts, with a key on every figure"]
+    # R5 stage gates: errors still open after a stage's fix-up turn, shown to
+    # every later stage; and one record per gate. Appended to, never replaced
+    # (the analysts' gates run side by side).
+    open_errata: Annotated[list, operator.add]
+    quality_gates: Annotated[list, operator.add]
     trade_date: Annotated[str, "The analysis date; data is served as of it"]
 
     # research step

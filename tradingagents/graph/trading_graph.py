@@ -111,6 +111,7 @@ class TradingAgentsGraph:
             self.conditional_logic,
             max_tool_rounds,
             extra_tools=self.extra_tools,
+            quality_gates=bool(self.config.get("quality_gates")),
         )
 
         self.propagator = Propagator(
@@ -488,6 +489,21 @@ class TradingAgentsGraph:
                 computed_context=anchor,
             )
 
+        # The full lint pass (R5): every stage, the digest and the plan,
+        # against the fact sheet. Pure code; never fails the run.
+        if final_state.get("fact_sheet"):
+            try:
+                from tradingagents.quality.lint import lint_state
+
+                final_state["quality"] = {
+                    "version": 1,
+                    "lint": lint_state(final_state),
+                    "gates": final_state.get("quality_gates") or [],
+                    "open_errata": final_state.get("open_errata") or [],
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("quality lint failed: %s", exc, exc_info=True)
+
         self.record_decision(company_name, trade_date, final_state)
 
         # Clear checkpoint on successful completion to avoid stale state.
@@ -585,6 +601,8 @@ class TradingAgentsGraph:
             # The fact sheet the stages cited (R4): the report's key numbers
             # render from it, and the linter checks citations against it.
             "fact_sheet": final_state.get("fact_sheet"),
+            # R5: the lint report, the stage gates' records and open errata.
+            "quality": final_state.get("quality"),
         }
 
         # A ticker that would escape the results directory is rejected.
