@@ -8,6 +8,9 @@ CITE_RULE = (
     "never present a year-to-date or trailing figure as a quarter; label every figure with its "
     "period. Quarters listed as already reported are past results, not upcoming ones. Where the "
     "fact sheet says a source is unavailable, say the figure is unavailable rather than estimating it."
+    "\n\n**Data you may not use**, even when a source mentions it: short interest, short float or "
+    "days to cover; consensus estimates; analyst price targets. Analyst rating changes may be "
+    "mentioned only as the news reported them, with the outlet."
 )
 
 

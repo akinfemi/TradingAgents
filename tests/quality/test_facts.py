@@ -209,3 +209,93 @@ def test_the_state_log_keeps_the_fact_sheet(tmp_path):
     _bare_graph(tmp_path)._log_state("2026-10-05", state)
     logged = json.loads(next(tmp_path.rglob("full_states_log*.json")).read_text(encoding="utf-8"))
     assert logged["fact_sheet"]["facts"][0]["key"] == "ev"
+
+
+# ---- business description (R4b) ------------------------------------------------
+
+_10K = (
+    "<html><body><p>Table of Contents</p><p>Item 1. Business 4</p><p>Item 1A. Risk Factors 18</p>"
+    "<p>PART I</p><p>ITEM 1. B<span>USINESS</span></p><p>Overview</p>"
+    "<p>Ondas Holdings provides private wireless data networks and autonomous drone systems "
+    "for defense, homeland security and industrial customers. " + "It sells to rail operators. " * 120
+    + "</p><p>Item 1A. Risk Factors</p></body></html>"
+)
+
+
+@pytest.mark.unit
+def test_item1_skips_the_contents_page_and_reads_small_caps():
+    excerpt = edgar_ext.item1_excerpt(_10K)
+    assert excerpt.startswith("Ondas Holdings provides private wireless")
+    assert len(excerpt) <= 2500
+
+
+@pytest.mark.unit
+def test_description_is_summarised_once_per_10k(tmp_path, monkeypatch):
+    from tradingagents.dataflows.config import get_config, set_config
+
+    config = get_config()
+    config["data_cache_dir"] = str(tmp_path)
+    set_config(config)
+    companyfacts = json.loads((FIX / "onds_companyfacts.json").read_text())
+    submissions = json.loads((FIX / "onds_submissions.json").read_text())
+    st = edgar_ext.from_json("0001646188", companyfacts, submissions, "2026-10-05")
+    monkeypatch.setattr(edgar_ext, "fetch_item1", lambda cik, filing: edgar_ext.item1_excerpt(_10K))
+    prompts = []
+
+    def describe(prompt):
+        prompts.append(prompt)
+        return "Ondas makes private wireless networks and drone systems for defense and rail."
+
+    ohlcv = pd.read_csv(FIX / "onds_ohlcv.csv")
+    for _ in range(2):
+        sheet = facts.build("ONDS", "2026-10-05", "2026-10-05T10:33:00Z", statements=st, ohlcv=ohlcv,
+                            news_text="", describe=describe)
+    assert len(prompts) == 1  # cached by accession
+    assert "Ondas Holdings provides private wireless" in prompts[0]
+    assert sheet.identity["description"].startswith("Ondas makes")
+    assert "0001213900-26-035981" in sheet.identity["description_source"]
+    assert "Business (from the 10-K" in facts.render(sheet)
+
+
+# ---- segments (R4b) -------------------------------------------------------------
+
+_INSTANCE = """<?xml version="1.0"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
+  xmlns:us-gaap="http://fasb.org/us-gaap/2025">
+ <xbrli:context id="c1"><xbrli:entity><xbrli:segment>
+   <xbrldi:explicitMember dimension="us-gaap:StatementBusinessSegmentsAxis">nvda:ComputeAndNetworkingMember</xbrldi:explicitMember>
+   <xbrldi:explicitMember dimension="srt:ConsolidationItemsAxis">us-gaap:OperatingSegmentsMember</xbrldi:explicitMember>
+ </xbrli:segment></xbrli:entity><xbrli:period><xbrli:startDate>2026-04-27</xbrli:startDate><xbrli:endDate>2026-07-26</xbrli:endDate></xbrli:period></xbrli:context>
+ <xbrli:context id="c0"><xbrli:entity><xbrli:segment>
+   <xbrldi:explicitMember dimension="us-gaap:StatementBusinessSegmentsAxis">nvda:ComputeAndNetworkingMember</xbrldi:explicitMember>
+   <xbrldi:explicitMember dimension="srt:ConsolidationItemsAxis">us-gaap:OperatingSegmentsMember</xbrldi:explicitMember>
+ </xbrli:segment></xbrli:entity><xbrli:period><xbrli:startDate>2025-04-28</xbrli:startDate><xbrli:endDate>2025-07-27</xbrli:endDate></xbrli:period></xbrli:context>
+ <xbrli:context id="geo"><xbrli:entity><xbrli:segment>
+   <xbrldi:explicitMember dimension="us-gaap:StatementBusinessSegmentsAxis">nvda:ComputeAndNetworkingMember</xbrldi:explicitMember>
+   <xbrldi:explicitMember dimension="srt:StatementGeographicalAxis">country:US</xbrldi:explicitMember>
+ </xbrli:segment></xbrli:entity><xbrli:period><xbrli:startDate>2026-04-27</xbrli:startDate><xbrli:endDate>2026-07-26</xbrli:endDate></xbrli:period></xbrli:context>
+ <us-gaap:Revenues contextRef="c1" unitRef="usd" decimals="-6">88299000000</us-gaap:Revenues>
+ <us-gaap:Revenues contextRef="c0" unitRef="usd" decimals="-6">41331000000</us-gaap:Revenues>
+ <us-gaap:Revenues contextRef="geo" unitRef="usd" decimals="-6">1</us-gaap:Revenues>
+</xbrli:xbrl>"""
+
+
+@pytest.mark.unit
+def test_segments_parse_with_year_ago_change():
+    from tradingagents.quality.facts import QuarterCol, segment_facts
+
+    rows = edgar_ext.parse_segments(_INSTANCE, ["2026-07-26", "2025-07-27"],
+                                    {"nvda:ComputeAndNetworkingMember": "Compute & Networking"})
+    assert [(r["label"], r["value"]) for r in rows] == [
+        ("Compute & Networking", 41331000000.0), ("Compute & Networking", 88299000000.0)]  # geography cut dropped
+    cols = [QuarterCol(end="2025-07-27", calendar="2025Q2", fiscal="Q2 FY2026"),
+            QuarterCol(end="2026-07-26", calendar="2026Q2", fiscal="Q2 FY2027")]
+    facts_ = {f.key: f.value for f in segment_facts(rows, cols, [], "2026-08-26 x")}
+    assert facts_["seg_revenue.compute_networking.2026Q2"] == 88299000000.0
+    assert round(facts_["seg_revenue_yoy.compute_networking.2026Q2"]) == 114
+
+
+@pytest.mark.unit
+def test_member_names_without_a_label_file():
+    assert edgar_ext._humanize("nvda:ComputeAndNetworkingMember") == "Compute and Networking"
+    assert edgar_ext._humanize("onds:ProductRevenueMember") == "Product Revenue"

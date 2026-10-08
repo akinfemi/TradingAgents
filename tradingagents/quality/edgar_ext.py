@@ -15,9 +15,13 @@ a period reported more than once takes its latest filing on or before then.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from html import unescape
+from pathlib import Path
 
+from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.vendors.sec_edgar import _FACTS_URL, _cached_json, cik_for
 
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
@@ -341,3 +345,198 @@ def get_fundamentals_overview(ticker: str, curr_date: str | None = None) -> str:
         "longer filed history. Consensus estimates, analyst price targets and third-party profile "
         "statistics are not available on this platform; do not cite or estimate them."
     )
+
+
+# ---- business description (10-K Item 1) ---------------------------------------
+
+# Small caps can extract with stray spaces ("ITEM 1. B USINESS", Microsoft).
+_ITEM1 = re.compile(
+    r"items?\s*1\s*(?:and\s*2\s*)?[.:—–-]?\s*b\s?u\s?s\s?i\s?n\s?e\s?s\s?s\b",  # "Items 1 and 2." (Exxon)
+    re.IGNORECASE,
+)
+_ITEM1A = re.compile(r"item\s*1a\s*[.:—–-]?\s*risk\s+factors", re.IGNORECASE)
+
+
+def _plain_text(html: str) -> str:
+    html = re.sub(r"(?is)<(script|style|ix:header)[^>]*>.*?</\1>", " ", html)
+    text = re.sub(r"(?s)<[^>]+>", " ", html)
+    text = unescape(text).replace("\xa0", " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def item1_excerpt(html: str, limit: int = 2500) -> str | None:
+    """The opening of a 10-K's Item 1 (Business), past the table of contents.
+
+    A contents entry ("Item 1. Business 4 Item 1A. Risk Factors 12") is
+    followed closely by Item 1A; the real section runs thousands of
+    characters before it. The first heading with a long run wins."""
+    text = _plain_text(html)
+    for m in _ITEM1.finditer(text):
+        nxt = _ITEM1A.search(text, m.end())
+        run = (nxt.start() if nxt else len(text)) - m.end()
+        # Contents pages list the next items within a line or two (page
+        # headers repeating "Item 1" inside the section don't count).
+        if run < 2000 or re.search(r"\bitem\s*(1a|1b|1c|2)\b", text[m.end(): m.end() + 300], re.IGNORECASE):
+            continue
+        body = text[m.end(): m.end() + limit * 2].lstrip(" .:-")
+        body = re.sub(r"^(Overview|General|Our Company|Company Overview)\b\s*", "", body, flags=re.IGNORECASE)
+        cut = body[:limit]
+        end = cut.rfind(". ")
+        return cut[: end + 1] if end > limit // 2 else cut
+    return None
+
+
+def latest_annual_report(submissions: dict, as_of: str) -> dict | None:
+    """The newest 10-K filed on or before ``as_of``."""
+    return next((r for r in filings(submissions, ("10-K",)) if r["filed"] <= as_of), None)
+
+
+def annual_report_url(cik: str, filing: dict) -> str:
+    return (f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/"
+            f"{filing['accn'].replace('-', '')}/{filing['document']}")
+
+
+def fetch_item1(cik: str, filing: dict) -> str | None:
+    """Item 1 excerpt for a filing, cached by accession number."""
+    import requests
+
+    from tradingagents.dataflows.vendors.sec_edgar import _user_agent
+
+    path = Path(get_config()["data_cache_dir"]) / "sec_edgar" / f"item1-{filing['accn']}.txt"
+    if path.exists():
+        return path.read_text(encoding="utf-8") or None
+    response = requests.get(annual_report_url(cik, filing), headers={"User-Agent": _user_agent()}, timeout=60)
+    response.raise_for_status()
+    excerpt = item1_excerpt(response.text) or ""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(excerpt, encoding="utf-8")
+    return excerpt or None
+
+
+# ---- segments (dimensional XBRL in the filing's instance document) ----------------
+
+_SEGMENT_AXES = {
+    "StatementBusinessSegmentsAxis": "segment",
+    "ProductOrServiceAxis": "product",
+}
+_SEGMENT_CONCEPTS = {
+    "Revenues": "revenue",
+    "RevenueFromContractWithCustomerExcludingAssessedTax": "revenue",
+    "OperatingIncomeLoss": "operating_income",
+}
+
+
+def _humanize(member: str) -> str:
+    """"nvda:ComputeAndNetworkingMember" → "Compute and Networking"."""
+    name = member.split(":")[-1]
+    name = re.sub(r"(Segment)?Member$", "", name)
+    words = re.findall(r"[A-Z]+(?=[A-Z][a-z]|\b|\d)|[A-Z]?[a-z]+|\d+", name)
+    small = {"And": "and", "Of": "of", "For": "for", "The": "the", "In": "in"}
+    return " ".join(small.get(w, w) for i, w in enumerate(words)) or name
+
+
+def parse_labels(label_xml: str) -> dict[str, str]:
+    """{"nvda:DataCenterMember": "Data Center"} from a filing's label linkbase."""
+    import xml.etree.ElementTree as ET
+
+    xlink = "{http://www.w3.org/1999/xlink}"
+    root = ET.fromstring(label_xml)
+    locs, arcs, texts = {}, {}, {}
+    for el in root.iter():
+        tag = el.tag.split("}")[-1]
+        if tag == "loc":
+            href = el.get(f"{xlink}href", "")
+            locs[el.get(f"{xlink}label")] = href.split("#")[-1].replace("_", ":", 1)
+        elif tag == "labelArc":
+            arcs.setdefault(el.get(f"{xlink}from"), []).append(el.get(f"{xlink}to"))
+        elif tag == "label" and el.text:
+            role = el.get(f"{xlink}role", "")
+            # The plain label wins over terse/verbose variants.
+            if role.endswith("/label") or el.get(f"{xlink}label") not in texts:
+                texts[el.get(f"{xlink}label")] = el.text.strip()
+    out = {}
+    for loc, concept in locs.items():
+        for to in arcs.get(loc, []):
+            if to in texts:
+                out.setdefault(concept, re.sub(r"\s*\[Member\]$", "", texts[to]))
+    return out
+
+
+def parse_segments(instance_xml: str, quarter_ends: list[str], labels: dict | None = None) -> list[dict]:
+    """[{axis, member, label, concept, end, value}] for 3-month periods ending
+    on ``quarter_ends``, one dimension (a segment or a product line) each."""
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(instance_xml)
+    contexts: dict[str, tuple[str, str, str]] = {}
+    for ctx in root.iter():
+        if not ctx.tag.endswith("}context"):
+            continue
+        members = [m for m in ctx.iter() if m.tag.endswith("}explicitMember")]
+        # One segment or product line, optionally marked as an operating
+        # segment (how NVIDIA tags its segment revenue); anything else is a
+        # finer cut (customers, geographies) left out.
+        members = [m for m in members if not (
+            m.get("dimension", "").endswith("ConsolidationItemsAxis")
+            and (m.text or "").strip().endswith("OperatingSegmentsMember"))]
+        if len(members) != 1:
+            continue
+        axis = members[0].get("dimension", "").split(":")[-1]
+        if axis not in _SEGMENT_AXES:
+            continue
+        start = next((p.text for p in ctx.iter() if p.tag.endswith("}startDate")), None)
+        end = next((p.text for p in ctx.iter() if p.tag.endswith("}endDate")), None)
+        if not start or not end or end not in quarter_ends:
+            continue
+        days = (date.fromisoformat(end) - date.fromisoformat(start)).days
+        span = "Q" if 60 <= days <= 115 else "FY" if 300 <= days <= 400 else None
+        if span is None:
+            continue
+        contexts[ctx.get("id")] = (_SEGMENT_AXES[axis], (members[0].text or "").strip(), end, span)
+    rows: dict[tuple, dict] = {}
+    for el in root:
+        local = el.tag.split("}")[-1]
+        concept = _SEGMENT_CONCEPTS.get(local)
+        ctx = contexts.get(el.get("contextRef", ""))
+        if concept is None or ctx is None or el.text is None:
+            continue
+        try:
+            value = float(el.text)
+        except ValueError:
+            continue
+        axis, member, end, span = ctx
+        key = (axis, member, concept, end, span)
+        # First tag wins (Revenues before the ASC 606 tag), as in the statements.
+        rows.setdefault(key, {"axis": axis, "member": member,
+                              "label": (labels or {}).get(member) or _humanize(member),
+                              "concept": concept, "end": end, "span": span, "value": value})
+    return sorted(rows.values(), key=lambda r: (r["axis"], r["concept"], r["end"], -abs(r["value"])))
+
+
+def fetch_segments(cik: str, filing: dict, quarter_ends: list[str]) -> list[dict]:
+    """Segment rows from a 10-Q/10-K's XBRL instance, cached by accession."""
+    import json
+
+    import requests
+
+    from tradingagents.dataflows.vendors.sec_edgar import _user_agent
+
+    path = Path(get_config()["data_cache_dir"]) / "sec_edgar" / f"segments-{filing['accn']}.json"
+    if path.exists():
+        return [r for r in json.loads(path.read_text(encoding="utf-8")) if r["end"] in quarter_ends]
+    base = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{filing['accn'].replace('-', '')}/"
+    instance = re.sub(r"\.htm$", "_htm.xml", filing["document"])
+    response = requests.get(base + instance, headers={"User-Agent": _user_agent()}, timeout=60)
+    response.raise_for_status()
+    labels = {}
+    try:  # a separate label linkbase, where the filer publishes one
+        lab = requests.get(base + re.sub(r"\.htm$", "_lab.xml", filing["document"]),
+                           headers={"User-Agent": _user_agent()}, timeout=60)
+        if lab.ok:
+            labels = parse_labels(lab.text)
+    except Exception:  # noqa: BLE001 — names fall back to the member's code
+        labels = {}
+    rows = parse_segments(response.text, quarter_ends, labels)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(rows), encoding="utf-8")
+    return rows

@@ -325,14 +325,16 @@ class TradingAgentsGraph:
         return Path(self.config["results_dir"]) / "reports" / f"{safe_ticker_component(ticker)}_{stamp}"
 
     def create_run_state(self, company_name, trade_date, asset_type: str = "stock", portfolio=None,
-                         extra_sentiment_blocks: list | None = None, run_started_at: str | None = None):
+                         extra_sentiment_blocks: list | None = None, run_started_at: str | None = None,
+                         callbacks: list | None = None):
         """Build a run's initial state; propagate() and the CLI both start here.
 
         Injects the resolved instrument identity for every agent (#814). The
         memory log's lessons are not here: the graph's Memory Log step settles
         and loads them alongside the analysts (see ``_memory_step``).
         """
-        sheet, sheet_text = self.build_fact_sheet(company_name, trade_date, asset_type, run_started_at)
+        sheet, sheet_text = self.build_fact_sheet(company_name, trade_date, asset_type, run_started_at,
+                                                  callbacks=callbacks)
         return self.propagator.create_initial_state(
             company_name,
             trade_date,
@@ -345,7 +347,8 @@ class TradingAgentsGraph:
         )
 
     def build_fact_sheet(self, company_name, trade_date, asset_type: str = "stock",
-                         run_started_at: str | None = None) -> tuple[dict | None, str]:
+                         run_started_at: str | None = None,
+                         callbacks: list | None = None) -> tuple[dict | None, str]:
         """The run's fact sheet (REPORT_QUALITY_PLAN R4) when ``config["fact_sheet"]``
         is on: (sheet as JSON, prompt text). Off, or on any failure: (None, "")."""
         if not self.config.get("fact_sheet"):
@@ -354,7 +357,15 @@ class TradingAgentsGraph:
             from tradingagents.quality import facts
 
             started = run_started_at or datetime.now(UTC).isoformat(timespec="seconds")
-            sheet = facts.build(company_name, str(trade_date), started, asset_type)
+            describe = None
+            deep = getattr(self, "deep_thinking_llm", None)
+            if deep is not None:
+                # One deep-model call per 10-K (cached by accession); its usage
+                # counts on the run through the run's callbacks.
+                def describe(prompt: str) -> str:
+                    reply = deep.invoke(prompt, config={"callbacks": callbacks or []})
+                    return reply.text if hasattr(reply, "text") else str(reply)
+            sheet = facts.build(company_name, str(trade_date), started, asset_type, describe=describe)
             return sheet.model_dump(mode="json"), facts.render(sheet)
         except Exception as exc:  # noqa: BLE001 — the run goes on without it
             logger.warning("fact sheet for %s failed: %s", company_name, exc, exc_info=True)
@@ -432,6 +443,7 @@ class TradingAgentsGraph:
         init_agent_state = self.create_run_state(
             company_name, trade_date, asset_type, portfolio,
             extra_sentiment_blocks=extra_sentiment_blocks, run_started_at=run_started_at,
+            callbacks=callbacks,
         )
         args = self.propagator.get_graph_args(callbacks=callbacks)
 

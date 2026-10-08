@@ -417,13 +417,155 @@ def _identity(st: edgar_ext.Statements | None) -> dict:
     }
 
 
+_DESCRIBE_PROMPT = (
+    "Below is the opening of {name}'s annual report (Form 10-K, Item 1, filed {filed}). In two or "
+    "three plain sentences, say what the company does: its products or services, its customers "
+    "and markets, and its segments if named. Use only this text. No figures unless the text states "
+    "them, no opinions, no forward-looking claims, no marketing adjectives.\n\n---\n{excerpt}\n---"
+)
+
+
+def _describe_business(sheet: FactSheet, st: edgar_ext.Statements, trade_date: str, describe) -> None:
+    """identity.description from the latest 10-K's Item 1, summarised once
+    per filing (cached by accession). Never raises."""
+    import json as _json
+    from pathlib import Path
+
+    from tradingagents.dataflows.config import get_config
+
+    try:
+        filing = edgar_ext.latest_annual_report(st.submissions, trade_date)
+        if filing is None:
+            return
+        cache = Path(get_config()["data_cache_dir"]) / "sec_edgar" / f"description-{filing['accn']}.json"
+        if cache.exists():
+            text = _json.loads(cache.read_text(encoding="utf-8")).get("description")
+        else:
+            excerpt = edgar_ext.fetch_item1(st.cik, filing)
+            if not excerpt:
+                return
+            text = str(describe(_DESCRIBE_PROMPT.format(
+                name=sheet.identity.get("name") or sheet.ticker, filed=filing["filed"], excerpt=excerpt))).strip()
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(_json.dumps({"description": text, "filing": filing}), encoding="utf-8")
+        if text:
+            sheet.identity.update(
+                description=text,
+                description_source=f"10-K filed {filing['filed']} ({filing['accn']}), Item 1, summarised",
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.info("fact sheet: business description for %s skipped: %s", sheet.ticker, exc)
+
+
+def _slug(label: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:40]
+
+
+def segment_facts(rows: list[dict], cols: list[QuarterCol], years: list[QuarterCol], filed: str) -> list[Fact]:
+    """Facts for segment and product-line rows: seg_<concept>.<slug>.<period>,
+    with year-on-year change where the filing carries the comparative."""
+    out: list[Fact] = []
+    if not rows:
+        return out
+    # The latest period and its year-ago comparative only, at most 8 lines per
+    # kind and measure, largest first: the sheet goes to every stage.
+    latest = max(r["end"] for r in rows)
+    span = next(r["span"] for r in rows if r["end"] == latest)
+    keep_ends = {latest} | {r["end"] for r in rows if r["span"] == span
+                            and abs((date.fromisoformat(latest) - date.fromisoformat(r["end"])).days - 364) <= 10}
+    rows = [r for r in rows if r["end"] in keep_ends and r["span"] == span]
+    top: dict[tuple, set] = {}
+    for r in sorted(rows, key=lambda r: -abs(r["value"]) if r["end"] == latest else 0):
+        if r["end"] == latest:
+            names = top.setdefault((r["axis"], r["concept"]), set())
+            if len(names) < 8:
+                names.add(r["label"])
+    rows = [r for r in rows if r["label"] in top.get((r["axis"], r["concept"]), set())]
+    rows.sort(key=lambda r: (r["axis"] != "segment", r["concept"], r["end"] != latest, -abs(r["value"])))
+    by_end = {c.end: c for c in cols}
+    by_year = {y.end: y for y in years}
+    values: dict[tuple, float] = {}
+    for r in rows:
+        col = by_end.get(r["end"]) if r["span"] == "Q" else by_year.get(r["end"])
+        label = col.calendar if col else (f"FY{r['end'][:4]}" if r["span"] == "FY" else None)
+        if label is None:
+            continue
+        kind = "segment" if r["axis"] == "segment" else "product line"
+        key = f"seg_{r['concept']}.{_slug(r['label'])}.{label}"
+        values[(r["concept"], _slug(r["label"]), r["end"], r["span"])] = r["value"]
+        out.append(Fact(key=key, value=r["value"], unit="usd", period=label, concept=f"{kind}: {r['label']}",
+                        source="sec_xbrl", filed=filed))
+    for r in rows:
+        prior = next((e for (c, s_, e, sp) in values
+                      if c == r["concept"] and s_ == _slug(r["label"]) and sp == r["span"]
+                      and abs((date.fromisoformat(r["end"]) - date.fromisoformat(e)).days - 364) <= 10), None)
+        col = by_end.get(r["end"]) if r["span"] == "Q" else by_year.get(r["end"])
+        label = col.calendar if col else (f"FY{r['end'][:4]}" if r["span"] == "FY" else None)
+        then = values.get((r["concept"], _slug(r["label"]), prior, r["span"])) if prior else None
+        if label and then:
+            out.append(Fact(key=f"seg_{r['concept']}_yoy.{_slug(r['label'])}.{label}",
+                            value=round((r["value"] / then - 1) * 100, 2), unit="pct", period=label,
+                            concept=f"{r['label']} year on year", source="computed",
+                            derivation=f"this period ÷ the period ended {prior} − 1, both as filed"))
+    return out
+
+
+def _add_segments(sheet: FactSheet, st: edgar_ext.Statements, trade_date: str) -> None:
+    """Segment and product-line figures from the latest 10-Q/10-K's
+    dimensional XBRL (R4b). Never raises."""
+    try:
+        filing = next((r for r in edgar_ext.filings(st.submissions) if r["filed"] <= trade_date), None)
+        if filing is None:
+            return
+        ends = list({*st.quarter_ends, *st.year_ends})
+        rows = edgar_ext.fetch_segments(st.cik, filing, ends)
+        facts = segment_facts(rows, sheet.quarters, sheet.years, f"{filing['filed']} {filing['accn']}")
+        sheet.facts.extend(facts)
+        if facts:
+            sheet.identity["segments_source"] = f"{filing['form']} for {filing['period']}, filed {filing['filed']}"
+    except Exception as exc:  # noqa: BLE001
+        logger.info("fact sheet: segments for %s skipped: %s", sheet.ticker, exc)
+
+
+def _confirm_from_news(nxt: dict, ticker: str, trade_date: str, identity: dict,
+                       news_text: str | None = None) -> None:
+    """Upgrade the estimated date to "confirmed" when the company's own
+    announcement is in the news (R4b). Never raises."""
+    from tradingagents.quality.calendar import confirmed_date
+
+    try:
+        if news_text is None:
+            from tradingagents.dataflows.router import route_to_vendor
+
+            start = (date.fromisoformat(trade_date) - timedelta(days=45)).isoformat()
+            news_text = route_to_vendor("get_news", ticker, start, trade_date)
+        name = (identity.get("name") or "").split()
+        names = [ticker, name[0].rstrip(",.") if name else ""]
+        found = confirmed_date(str(news_text), names, trade_date, nxt.get("date"))
+    except Exception as exc:  # noqa: BLE001 — the estimate stands
+        logger.info("fact sheet: earnings confirmation for %s skipped: %s", ticker, exc)
+        return
+    if found:
+        nxt.update(
+            date=found["date"], status="confirmed",
+            basis=f"announced by the company: \"{found['title']}\""
+                  + (f" ({found['source']})" if found.get("source") else ""),
+            link=found.get("link"),
+        )
+
+
 # ---- build -------------------------------------------------------------------------
 
 
 def build(ticker: str, trade_date: str, run_started_at: str | None = None, asset_type: str = "stock",
           *, statements: edgar_ext.Statements | None = None, ohlcv: pd.DataFrame | None = None,
-          offline: bool = False, n_quarters: int = 5) -> FactSheet:
-    """The fact sheet for one run. Never raises."""
+          offline: bool = False, n_quarters: int = 5, news_text: str | None = None,
+          describe=None) -> FactSheet:
+    """The fact sheet for one run. Never raises.
+
+    ``describe``: optional ``fn(excerpt) -> str`` that summarises the 10-K's
+    Item 1 (the deep model, from the graph); without it there is no
+    business description."""
     sheet = FactSheet(ticker=ticker.upper(), asset_type=asset_type, trade_date=trade_date,
                       built_at=datetime.now(UTC).isoformat(timespec="seconds"))
     close, last_bar = None, None
@@ -455,8 +597,14 @@ def build(ticker: str, trade_date: str, run_started_at: str | None = None, asset
             sheet.facts.extend(derived)
             sheet.flags.extend(flags)
             sheet.identity = _identity(st)
+            if describe is not None and not offline:
+                _describe_business(sheet, st, trade_date, describe)
+            if not offline:
+                _add_segments(sheet, st, trade_date)
             sheet.calendar = {"earnings_next": _next_earnings(st, cols, trade_date)}
             nxt = sheet.calendar["earnings_next"]
+            if nxt and (news_text is not None or not offline):
+                _confirm_from_news(nxt, ticker, trade_date, sheet.identity, news_text)
             if nxt:
                 sheet.facts.append(Fact(
                     key="earnings.next", value=nxt["date"], unit="date", period=nxt["covers"],
@@ -534,6 +682,8 @@ def render(sheet: FactSheet) -> str:
             f"{ident.get('sic_description') or ''}; {', '.join(ident.get('exchanges') or []) or 'exchange n/a'}; "
             f"fiscal year ends {ident.get('fiscal_year_end') or 'n/a'})."
         )
+    if ident.get("description"):
+        out.append(f"Business (from the 10-K, {ident.get('description_source', '')}): {ident['description']}")
     if sheet.session.get("text"):
         out.append(f"Session clock: {sheet.session['text']}")
     if sheet.unavailable:
@@ -591,6 +741,12 @@ def render(sheet: FactSheet) -> str:
         out.append("\n### Derived (computed from the figures above)")
         out.extend(f"- [F:{f.key}] {_fmt(f)} — {f.derivation or f.concept}" + (f" ({f.period})" if f.period else "")
                    for f in derived)
+
+    seg = [f for f in sheet.facts if f.key.startswith("seg_")]
+    if seg:
+        out.append(f"\n### Segments and product lines (as filed: {sheet.identity.get('segments_source', '')}). "
+                   "Product lines can overlap or be parts of each other; they need not sum to revenue.")
+        out.extend(f"- [F:{f.key}] {f.concept}, {f.period}: {_fmt(f)}" for f in seg)
 
     nxt = (sheet.calendar or {}).get("earnings_next")
     if nxt:
