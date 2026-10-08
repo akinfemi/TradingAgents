@@ -133,3 +133,34 @@ def test_full_pass_reports_counts(sheet):
     report = lint_state(state)
     assert report["has_fact_sheet"] and report["blocking"] == 2
     assert {f["kind"] for f in report["flags"]} == {"direction", "target_direction"}
+
+
+@pytest.mark.unit
+def test_the_target_is_derived_and_inside_its_cases(sheet):
+    ok = {"rating": "Underweight", "price_target": 6.08, "bear_case_value": 4.1, "bull_case_value": 8.0,
+          "target_math": "12x × $174.1M = $2.09B EV; + $1.38B cash = $3.47B; ÷ 570.6M shares = $6.08"}
+    assert check_target(ok, sheet) == []
+    off = {**ok, "target_math": "… ÷ 570.6M shares = $5.10"}
+    assert [f.kind for f in check_target(off, sheet)] == ["target_math"]
+    outside = {**ok, "bull_case_value": 5.9}
+    assert [f.kind for f in check_target(outside, sheet)] == ["target_range"]
+
+
+@pytest.mark.unit
+def test_rendered_decision_carries_the_valuation():
+    from tradingagents.agents.schemas import PortfolioDecision, PortfolioRating, render_pm_decision
+
+    md = render_pm_decision(PortfolioDecision(
+        rating=PortfolioRating.UNDERWEIGHT, executive_summary="s", investment_thesis="t", price_target=6.08,
+        valuation_method="EV/Sales on TTM revenue", valuation_inputs=["ev_sales.ttm", "ttm_revenue.2026Q2"],
+        target_math="12x × $174.1M = $2.09B; ÷ 570.6M = $6.08", bear_case_value="$4.10", bull_case_value=8))
+    for line in ("**Valuation Method**: EV/Sales on TTM revenue", "**Valuation Inputs**: ev_sales.ttm, ttm_revenue.2026Q2",
+                 "**Target Math**: 12x", "**Bear Case Value**: 4.1", "**Bull Case Value**: 8.0"):
+        assert line in md
+
+
+@pytest.mark.unit
+def test_an_unverified_social_claim_cannot_carry_a_load_bearing_point(sheet):
+    text = "A $50M order from the Army (unverified social claim, n=1) underpins the bull case."
+    assert "social_claim" in {f.kind for f in lint_text(text, sheet, "digest", "digest.bull_thesis") if f.blocking}
+    assert "social_claim" not in {f.kind for f in lint_text(text, sheet, "sentiment_analyst", "sentiment_report")}

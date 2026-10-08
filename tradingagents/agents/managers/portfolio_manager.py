@@ -54,6 +54,8 @@ def create_portfolio_manager(llm):
 
 **Rating horizon:** rate the instrument's expected performance relative to {benchmark} over the next {horizon_words} ({horizon_days} trading days). The call is graded on exactly that: its return minus {benchmark}'s over the window. A price target, if you give one, is for the end of that window. How to get in or out (over how many sessions, at what levels) is execution timing, not the horizon.
 
+**Valuation:** derive the price target from the fact sheet, never assert it. Pick one method the figures support (EV/Sales on TTM or run-rate revenue for a company without stable earnings; P/E on TTM EPS where earnings are stable and positive), state the multiple you apply and why (relative to the current multiple on the fact sheet), and show the arithmetic from cited keys to the per-share target: enterprise value, plus cash and short-term investments, minus debt, divided by cover-page shares. Give bear and bull case values with the same method and different stated assumptions. The rating's direction and the target must agree (a buy-side rating has a target above the price; a sell-side one below). If the figures can't support a target, leave it empty and say why.
+
 **Rating Scale** (use exactly one):
 - **Buy**: Strong conviction to enter or add to position
 - **Overweight**: Favorable outlook, gradually increase exposure
@@ -78,6 +80,7 @@ Write these sections, in this order, starting with the rating on its own line:
 
 - **Rating**: exactly one of Buy / Overweight / Hold / Underweight / Sell
 - **Executive Summary**: the call and how to act on it
+- **Valuation**: the method, the inputs (fact keys), the target math, and the bear and bull case values
 - **Execution Timing**: how to enter or exit, e.g. "build over 3-5 sessions"
 - **Investment Thesis**: the evidence that decided it, and what would change it
 

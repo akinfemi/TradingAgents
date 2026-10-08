@@ -254,9 +254,35 @@ class PortfolioDecision(BaseModel):
     price_target: float | None = Field(
         default=None,
         description=(
-            "Optional target price in the instrument's quote currency, for the "
-            "end of the rating horizon given in the prompt."
+            "Target price in the instrument's quote currency, for the end of the "
+            "rating horizon, derived in target_math. Leave empty when the fact "
+            "sheet can't support one, and say why in the thesis."
         ),
+    )
+    valuation_method: str | None = Field(
+        default=None,
+        description=(
+            "How the target is derived, e.g. 'EV/Sales on TTM revenue', "
+            "'EV/Sales on run-rate revenue', 'P/E on TTM EPS'."
+        ),
+    )
+    valuation_inputs: list[str] = Field(
+        default_factory=list,
+        description="The fact-sheet keys the target uses, e.g. ['ev_sales.ttm', 'ttm_revenue.2026Q2', 'shares.cover'].",
+    )
+    target_math: str | None = Field(
+        default=None,
+        description=(
+            "The arithmetic from the inputs to the target, ending '= $<target>', e.g. "
+            "'12x × $174.1M TTM revenue = $2.09B EV; + $1.38B cash − $0 debt = $3.47B equity; "
+            "÷ 570.6M shares = $6.08'."
+        ),
+    )
+    bear_case_value: float | None = Field(
+        default=None, description="Per-share value in the bear case, same method, stated assumption in target_math.",
+    )
+    bull_case_value: float | None = Field(
+        default=None, description="Per-share value in the bull case, same method.",
     )
     execution_timing: str | None = Field(
         default=None,
@@ -272,7 +298,7 @@ class PortfolioDecision(BaseModel):
         ),
     )
 
-    @field_validator("price_target", mode="before")
+    @field_validator("price_target", "bear_case_value", "bull_case_value", mode="before")
     @classmethod
     def _nullish_float_to_none(cls, v):
         return _coerce_optional_float(v)
@@ -297,6 +323,16 @@ def render_pm_decision(decision: PortfolioDecision, rating_horizon: str | None =
     # so a reader cannot tell "no target" from "target not reported".
     target = decision.price_target if decision.price_target is not None else "not provided"
     parts.extend(["", f"**Price Target**: {target}"])
+    if decision.valuation_method:
+        parts.extend(["", f"**Valuation Method**: {decision.valuation_method}"])
+    if decision.valuation_inputs:
+        parts.extend(["", f"**Valuation Inputs**: {', '.join(decision.valuation_inputs)}"])
+    if decision.target_math:
+        parts.extend(["", f"**Target Math**: {decision.target_math}"])
+    if decision.bear_case_value is not None:
+        parts.extend(["", f"**Bear Case Value**: {decision.bear_case_value}"])
+    if decision.bull_case_value is not None:
+        parts.extend(["", f"**Bull Case Value**: {decision.bull_case_value}"])
     if rating_horizon:  # the window the call is graded on, e.g. "3 months (63 trading days) vs SPY"
         parts.extend(["", f"**Rating Horizon**: {rating_horizon}"])
     if decision.execution_timing:
@@ -421,7 +457,12 @@ class RiskLens(BaseModel):
         description="One short headline sentence capturing the position, e.g. 'Lean into the momentum.'",
     )
     summary: str = Field(
-        description="One to two sentences of the strongest supporting rationale, with concrete numbers where the analyst cited them.",
+        description=(
+            "What this lens would do differently from the decision, as its own "
+            "recommendation sentence quoted from its turn (not paraphrased), then "
+            "at most one sentence of rationale. Do not restate the debate or the "
+            "ruling."
+        ),
     )
 
 
@@ -458,8 +499,9 @@ class ReportDigest(BaseModel):
     ruling: str = Field(
         description=(
             "The research manager's ruling in two to three sentences: which "
-            "side won, the deciding argument, and what caps or boosts "
-            "conviction. Written for a reader who skipped the transcripts."
+            "side won and why, the deciding argument, and what caps or boosts "
+            "conviction. No sizing, levels or valuation (those belong to the "
+            "decision). Written for a reader who skipped the transcripts."
         ),
     )
     debate_winner: Literal["bull", "bear", "split"] = Field(
@@ -547,6 +589,6 @@ class ReportDigest(BaseModel):
             "The 3-4 conditions under which the decision says to exit, trim, "
             "or reverse — the watchlist this report leaves behind. Each title "
             "names the trigger, each detail says what observable change fires "
-            "it, in one sentence of at most 200 characters."
+            "it, in one sentence of at most 240 characters."
         ),
     )

@@ -218,3 +218,20 @@ def test_the_staging_hook_holds_only_its_ticker():
     other = FakeGraph([state()])
     other.config = {"quality_force_hold_ticker": "KO"}
     assert loop.run_with_quality(other, "ONDS", "2026-10-05", None, review_fn=review_with({}))[0]["quality"]["status"] == "clean"
+
+
+@pytest.mark.unit
+def test_a_billing_error_is_not_retried():
+    class Broke:
+        calls = 0
+
+        def bind_tools(self, _):
+            return self
+
+        def invoke(self, *_a, **_k):
+            Broke.calls += 1
+            raise RuntimeError("Error code: 400 - Your credit balance is too low to access the Anthropic API.")
+
+    with pytest.raises(RuntimeError, match="credit balance"):
+        editor.review(Broke(), state(), {"flags": []}, budget_seconds=600, sleep=lambda _s: None)
+    assert Broke.calls == 1

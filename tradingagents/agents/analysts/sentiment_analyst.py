@@ -1,3 +1,4 @@
+
 """Sentiment analyst: one sentiment report from three sources.
 
 The node fetches its sources before calling the model and puts them in the
@@ -17,6 +18,7 @@ supports it and free text otherwise, so the band, score and confidence header
 reads the same across providers.
 """
 
+import re
 from datetime import datetime, timedelta
 
 from langchain_core.messages import AIMessage
@@ -31,6 +33,7 @@ from tradingagents.agents.structured import (
     invoke_structured,
 )
 from tradingagents.agents.tools import get_news
+from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.vendors.reddit import (
     CRYPTO_SUBREDDITS,
     DEFAULT_SUBREDDITS,
@@ -38,6 +41,7 @@ from tradingagents.dataflows.vendors.reddit import (
     subreddits_for,
 )
 from tradingagents.dataflows.vendors.stocktwits import fetch_stocktwits_messages
+from tradingagents.quality import social
 
 
 def _seven_days_back(trade_date: str) -> str:
@@ -71,9 +75,17 @@ def create_sentiment_analyst(llm):
             ticker, limit=30, start_date=start_date, end_date=end_date, screen=screen
         )
         subreddits = subreddits_for(ticker)
-        reddit_block = fetch_reddit_posts(
-            ticker, subreddits, start_date=start_date, end_date=end_date, screen=screen
-        )
+        rules = bool(get_config().get("sentiment_rules"))
+        if rules and screen is None and social.is_ambiguous(ticker):
+            # Rule 5 (R7): an unscreened search for a ticker that is also a
+            # word returns posts about the word.
+            reddit_block = (f"<Reddit skipped: {ticker.upper()} is also a common word, and without "
+                            "screening a ticker search returns posts about the word, not the company>")
+        else:
+            reddit_block = fetch_reddit_posts(
+                ticker, subreddits, start_date=start_date, end_date=end_date, screen=screen
+            )
+        social_sample = social.sample(stocktwits_block, reddit_block, str(news_block)) if rules else None
 
         system_message = _build_system_message(
             ticker=ticker,
@@ -87,6 +99,14 @@ def create_sentiment_analyst(llm):
             # the caller and carried in the initial state; same no-tool design.
             extra_blocks=state.get("extra_sentiment_blocks") or [],
         )
+        if social_sample is not None:
+            reason = social.insufficient(social_sample)
+            system_message += (
+                f"\n\n**Sample (counted in code):** {social.coverage(social_sample)}. "
+                + (f"This sample is too small to score ({reason}): say so, give confidence 'low', and "
+                   "describe what the posts say without a score. " if reason else "")
+                + "State this coverage at the top of the report.\n\n" + social.SOCIAL_CLAIM_RULE
+            )
 
         prompt = ChatPromptTemplate.from_messages(
             [
@@ -120,11 +140,25 @@ def create_sentiment_analyst(llm):
             report_text = render_sentiment_report(parsed)
         else:
             report_text = llm.invoke(formatted_messages).content
+        structured = parsed.model_dump(mode="json") if parsed is not None else None
+
+        if social_sample is not None:
+            # Rules 1, 2 and 4 (R7), in code: whole-number score, or none on
+            # an insufficient sample; the coverage stated first.
+            structured = social.apply(structured or {}, social_sample)
+            header = (f"**Overall Sentiment:** insufficient data ({structured['insufficient_reason']})"
+                      if structured.get("insufficient_reason") else None)
+            lines = report_text.split("\n")
+            if header and lines and lines[0].startswith("**Overall Sentiment:**"):
+                lines[0] = header
+            elif structured.get("overall_score") is not None and lines and lines[0].startswith("**Overall Sentiment:**"):
+                lines[0] = re.sub(r"\(Score: [\d.]+/10\)", f"(Score: {structured['overall_score']}/10)", lines[0])
+            report_text = f"**Sample:** {structured['coverage']}.\n" + "\n".join(lines)
 
         return {
             "messages": [AIMessage(content=report_text)],
             "sentiment_report": report_text,
-            "sentiment_structured": parsed.model_dump(mode="json") if parsed is not None else None,
+            "sentiment_structured": structured,
         }
 
     return sentiment_analyst_node

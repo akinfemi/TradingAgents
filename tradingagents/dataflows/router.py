@@ -94,7 +94,9 @@ TOOLS_CATEGORIES = {
 OPTIONAL_CATEGORIES = {"macro_data", "prediction_markets"}
 
 # Mapping of methods to their vendor-specific implementations
-from tradingagents.quality.edgar_ext import get_fundamentals_overview as get_fact_sheet_overview  # noqa: E402
+from tradingagents.quality.edgar_ext import (  # noqa: E402
+    get_fundamentals_overview as get_fact_sheet_overview,
+)
 
 VENDOR_METHODS = {
     # core_stock_apis

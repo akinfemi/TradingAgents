@@ -141,6 +141,9 @@ def build_default_config() -> dict:
         # The quality loop (tickeragent.ai, R6): an editor reviews the finished
         # run; up to two revisions from the earliest bad stage, then a hold.
         "quality_loop": False,
+        # Sentiment sample rules (tickeragent.ai, R7): counted samples, a
+        # minimum before scoring, provenance for single-author claims.
+        "sentiment_rules": False,
         "editor_llm": None,        # defaults to deep_think_llm
         "editor_effort": None,
         # Output language for analyst reports and final decision

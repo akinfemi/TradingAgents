@@ -121,8 +121,13 @@ def build_digest_prompt(final_state: dict, computed_context: str | None = None) 
         "the argument is, not which agent made it.",
         "- No emoji, no rhetorical questions, no sign-offs ('Will the bull "
         "respond?'). Plain declarative sentences.",
-        "- Each exit-trigger detail is one sentence of at most 200 "
+        "- Each exit-trigger detail is one sentence of at most 240 "
         "characters; never end a field mid-thought.",
+        # R7: each field has one job, and nothing repeats.
+        "- Field roles: the ruling says which side won and why; sizing, "
+        "entry style and levels say how to act; the risk lenses say what each "
+        "lens would do differently, quoting its own recommendation sentence. "
+        "Never repeat a fact already stated in a field above.",
         "",
     ]
     if computed_context:

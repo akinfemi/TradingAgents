@@ -33,7 +33,8 @@ from difflib import SequenceMatcher
 # ---- the flag ----------------------------------------------------------------------
 
 BLOCKING_KINDS = {"cited_mismatch", "unknown_key", "direction", "misattributed", "arithmetic",
-                  "period_mismatch", "concept_mismatch", "data_policy", "target_direction"}
+                  "period_mismatch", "concept_mismatch", "data_policy", "target_direction", "target_math",
+                  "target_range", "social_claim"}
 
 LOAD_BEARING_FIELDS = {
     "digest.headline", "digest.bull_thesis", "digest.bear_thesis", "digest.ruling",
@@ -481,12 +482,25 @@ def check_target(decision: dict | None, facts: Facts) -> list[LintFlag]:
     close = facts.value("price.close")
     if not isinstance(target, (int, float)) or not isinstance(close, (int, float)) or not rating:
         return []
+    flags: list[LintFlag] = []
     up = target > close
     if (rating in ("Buy", "Overweight") and not up) or (rating in ("Sell", "Underweight") and up):
-        return [LintFlag("load_bearing", "target_direction", "portfolio_manager", "pm.price_target",
-                         f"{rating} with a target of {target} against a close of {close}",
-                         "a buy-side target above the price, a sell-side one below", ["price.close"])]
-    return []
+        flags.append(LintFlag("load_bearing", "target_direction", "portfolio_manager", "pm.price_target",
+                              f"{rating} with a target of {target} against a close of {close}",
+                              "a buy-side target above the price, a sell-side one below", ["price.close"]))
+    # R7: the target is derived — its math ends at it, and it sits between
+    # the bear and bull cases.
+    math = decision.get("target_math") or ""
+    ends = figures(math.rsplit("=", 1)[-1]) if "=" in math else []
+    if math and ends and ends[-1].kind == "usd" and abs(ends[-1].value - target) > max(0.02 * target, 0.01):
+        flags.append(LintFlag("load_bearing", "target_math", "portfolio_manager", "pm.price_target",
+                              math[:300], f"the math ends at {ends[-1].value:,.2f}, the target is {target:,.2f}"))
+    bear, bull = decision.get("bear_case_value"), decision.get("bull_case_value")
+    if isinstance(bear, (int, float)) and isinstance(bull, (int, float)) and not min(bear, bull) <= target <= max(bear, bull):
+        flags.append(LintFlag("load_bearing", "target_range", "portfolio_manager", "pm.price_target",
+                              f"target {target} with bear {bear} and bull {bull}",
+                              "the target sits between the bear and bull case values"))
+    return flags
 
 
 # ---- running it --------------------------------------------------------------------------------
@@ -507,6 +521,12 @@ def lint_text(text: str, facts: Facts, stage: str, field_name: str,
     ]
     if field_name in LOAD_BEARING_FIELDS:
         flags.extend(unsupported_figures(text, facts, stage, field_name))
+        # R7 rule 3: a single author's unverified claim stays out of
+        # load-bearing places (the headline, theses, ruling, decision).
+        for m in re.finditer(r"unverified social claim", text, re.I):
+            flags.append(LintFlag("load_bearing", "social_claim", stage, field_name,
+                                  _sentence_at(text, m.start(), m.end())[:300],
+                                  "a single author's unverified claim may not carry a load-bearing point"))
     return flags
 
 

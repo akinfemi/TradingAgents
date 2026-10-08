@@ -17,3 +17,22 @@ CITE_RULE = (
 
 def fact_sheet_block(text: str) -> str:
     return f"\n\n{text}\n\n{CITE_RULE}"
+
+
+# R7: the research manager adjudicates numbers before it rules.
+ADJUDICATION = (
+    "**Adjudicate the numbers first.** Before ruling, list the figures the two sides rely on or "
+    "dispute (up to eight), and resolve each against the fact sheet: verified (cite its key), wrong "
+    "(give the fact sheet's value and key), or not on the fact sheet (unverified). Score arguments by "
+    "whether their figures verify, not by tone or confidence: a point resting on a wrong or unverified "
+    "figure loses that point. Then rule on the strength of what verifies."
+)
+
+# R7: the risk stage's scope and length (was ~7K words re-arguing the debate).
+RISK_SCOPE = (
+    "**Scope of this turn.** Cover only: (1) liquidity (average daily volume, ATR from the fact "
+    "sheet); (2) event gaps (the next earnings date from the fact sheet's calendar, and how the "
+    "position should be sized into it); (3) position size and stops expressed in ATR terms; (4) what "
+    "would change the call. Do not re-argue the bull and bear debate; it has been ruled on. Keep the "
+    "turn under 500 words."
+)

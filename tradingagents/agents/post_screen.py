@@ -16,7 +16,7 @@ import logging
 import os
 import random
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 
 import requests
 
@@ -32,6 +32,9 @@ _ATTEMPTS = 3
 _MAX_WAIT = 30.0
 _TIMEOUT = 15.0
 _WORKERS = 16                   # well inside the documented 1,200 requests per minute
+# tickeragent.ai (R7): a source's screening gives up after this long overall
+# (retries could otherwise hang ~50s); its posts then pass unscreened.
+_DEADLINE = float(os.environ.get("TYPESAFE_DEADLINE_SECONDS") or 20)
 
 # A post is dropped only on a clear "not about it"; the uncertain middle stays.
 _OFF_TOPIC_BELOW = 0.3
@@ -150,6 +153,8 @@ def jev_screen(ticker: str):
             return _unscreened(instrument, posts, "malformed response")
         except TypeSafeError as exc:
             return _unscreened(instrument, posts, str(exc))
+        except FuturesTimeout:
+            return _unscreened(instrument, posts, f"no answer within {_DEADLINE:.0f}s")
         counts = ", ".join(f"{stances.count(s)} {s}" for s in ("bullish", "bearish", "neutral", "unclear"))
         return keep, (
             f"Screened by Jev: {len(stances)} of the {len(posts)} posts fetched are about "
@@ -174,7 +179,7 @@ def _ask_each(instrument: str, posts: list[str]) -> list[dict]:
             pool.submit(system_one, {"instrument": instrument, "post": post}, QUESTIONS): i
             for i, post in enumerate(posts)
         }
-        for future in as_completed(futures):
+        for future in as_completed(futures, timeout=_DEADLINE):
             answers[futures[future]] = future.result()
     finally:
         pool.shutdown(wait=False, cancel_futures=True)

@@ -76,5 +76,5 @@ def test_digest_prompt_puts_computed_indicators_above_transcripts():
     )
     assert "computed figures win" in prompt
     assert "Never name the pipeline's internal roles" in prompt
-    assert "at most 200" in prompt
+    assert "at most 240" in prompt
     assert prompt.index("## Computed figures") < prompt.index("## Market analyst report")

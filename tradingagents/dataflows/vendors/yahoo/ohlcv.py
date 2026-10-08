@@ -8,8 +8,11 @@ from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.errors import NoMarketDataError, VendorError
 from tradingagents.dataflows.files import replace_file
 from tradingagents.dataflows.symbols import normalize_symbol, safe_ticker_component
-from tradingagents.dataflows.tiingo import fetch_daily as fetch_tiingo_daily
-from tradingagents.dataflows.tiingo import price_vendor, tiingo_symbol
+from tradingagents.dataflows.tiingo import (
+    fetch_daily as fetch_tiingo_daily,
+    price_vendor,
+    tiingo_symbol,
+)
 from tradingagents.dataflows.vendors.yahoo.common import raise_for_empty, yf_retry
 
 logger = logging.getLogger(__name__)

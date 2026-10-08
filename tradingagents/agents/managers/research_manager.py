@@ -13,6 +13,7 @@ from tradingagents.agents.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+from tradingagents.quality.prompts import ADJUDICATION
 
 
 def create_research_manager(llm):
@@ -52,6 +53,8 @@ The debate always contains conflicting arguments; deciding which side is stronge
 
 ---
 
+{ADJUDICATION}
+
 **Analyst reports** (what the debate drew on; check quoted figures against these and the fact sheet):
 {reports}
 
@@ -63,6 +66,7 @@ The debate always contains conflicting arguments; deciding which side is stronge
 Write these sections, in this order, starting with the recommendation on its own line:
 
 - **Recommendation**: exactly one of Buy / Overweight / Hold / Underweight / Sell
+- **Disputed figures**: each figure, its verdict (verified / wrong / unverified) and the fact-sheet key
 - **Rationale**: which arguments decided it
 - **Strategic Actions**: concrete steps for the trader, sized against a standard allocation
 

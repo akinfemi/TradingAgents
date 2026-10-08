@@ -32,6 +32,23 @@ class EditorUnavailable(RuntimeError):
     """The editor could not complete a review within the retry budget."""
 
 
+# Failures that retrying can't fix: billing, authentication, a malformed
+# request. They propagate at once so the run fails with its real cause
+# (no_credit / bad_key, refunded) instead of waiting out the retry budget
+# (staging, 2026-10-08: "credit balance is too low" retried for 10 minutes).
+_FATAL_MARKERS = ("credit balance", "insufficient_quota", "billing", "invalid x-api-key", "invalid api key")
+_FATAL_STATUS = {400, 401, 402, 403, 404}
+
+
+def is_fatal(exc: Exception) -> bool:
+    message = str(exc).lower()
+    if any(m in message for m in _FATAL_MARKERS):
+        return True
+    if type(exc).__name__ in ("AuthenticationError", "PermissionDeniedError", "BadRequestError", "NotFoundError"):
+        return True
+    return getattr(exc, "status_code", None) in _FATAL_STATUS
+
+
 # ---- tools ----------------------------------------------------------------------------
 
 _OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
@@ -182,6 +199,8 @@ def review(llm, state: dict, lint_report: dict, earlier_errata: str = "", callba
             out["hold_reason"] = (out.get("hold_reason") or "").strip()
             return out
         except Exception as exc:  # noqa: BLE001 — retried, then a hold
+            if is_fatal(exc):
+                raise
             last = exc
             logger.warning("editor attempt failed: %s", exc)
             if time.monotonic() - started + delay > budget_seconds:

@@ -329,8 +329,10 @@ def fetch_reddit_posts(
             selftext = (p.get("selftext") or "").replace("\n", " ").strip()
             if len(selftext) > 240:
                 selftext = selftext[:240] + "…"
+            author = p.get("author")
+            # The author is shown so authors, not posts, can be counted (R7).
             lines.append(
-                f"  [{created_str}] {title}"
+                f"  [{created_str}" + (f" · u/{author}" if author else "") + f"] {title}"
                 + (f"\n    body excerpt: {selftext}" if selftext else "")
             )
         blocks.append("\n".join(lines))
