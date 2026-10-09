@@ -26,6 +26,51 @@ GROUP = {
     "risk_aggressive": "risk", "risk_conservative": "risk", "risk_neutral": "risk", "risk_debate": "risk",
     "portfolio_manager": "pm", "digest": "pm",
 }
+# What the editor and the lint write for a stage besides its STAGE_ORDER name:
+# the transcript's field names (rm, pm, bull…), the group names, and words.
+_STAGE_ALIASES = {
+    "rm": "research_manager", "research_manager": "research_manager", "research": "research_manager",
+    "ruling": "research_manager", "investment_plan": "research_manager", "research_judge": "research_manager",
+    "pm": "portfolio_manager", "portfolio_manager": "portfolio_manager", "decision": "portfolio_manager",
+    "final_trade_decision": "portfolio_manager",
+    "market": "market_analyst", "market_report": "market_analyst", "technical_analyst": "market_analyst",
+    "sentiment": "sentiment_analyst", "social": "sentiment_analyst", "social_analyst": "sentiment_analyst",
+    "social_media_analyst": "sentiment_analyst", "sentiment_report": "sentiment_analyst",
+    "news": "news_analyst", "news_report": "news_analyst",
+    "fundamentals": "fundamentals_analyst", "fundamental_analyst": "fundamentals_analyst",
+    "fundamentals_report": "fundamentals_analyst",
+    "bull": "bull_researcher", "bear": "bear_researcher", "bull_analyst": "bull_researcher",
+    "bear_analyst": "bear_researcher",
+    "trader_investment_plan": "trader",
+    "risk": "risk_debate", "risk_analysts": "risk_debate", "risk_team": "risk_debate",
+    "aggressive": "risk_aggressive", "conservative": "risk_conservative", "neutral": "risk_neutral",
+    "aggressive_analyst": "risk_aggressive", "conservative_analyst": "risk_conservative",
+    "neutral_analyst": "risk_neutral", "report_digest": "digest",
+    # Digest fields named as the stage.
+    "headline": "digest", "bull_thesis": "digest", "bear_thesis": "digest", "bull_points": "digest",
+    "bear_points": "digest", "exit_triggers": "digest",
+}
+
+
+def normalize_stage(stage) -> str:
+    """A stage as its STAGE_ORDER name: case, spaces, hyphens and dots fold
+    ("Research Manager", "rm" → research_manager; "PM" → portfolio_manager;
+    "digest.headline" → digest). Unknown names come back folded."""
+    text = re.sub(r"[\s\-]+", "_", str(stage or "").strip().lower()).strip("_")
+    head = text.split(".")[0].split("[")[0].split("/")[0]
+    if head in ("digest", "report_digest"):
+        return "digest"
+    if head in GROUP:
+        return head
+    if head in _STAGE_ALIASES:
+        return _STAGE_ALIASES[head]
+    # "portfolio_manager_decision", "rm_ruling": the stage named first.
+    for name in sorted([*GROUP, *_STAGE_ALIASES], key=len, reverse=True):
+        if head.startswith(name + "_"):
+            return name if name in GROUP else _STAGE_ALIASES[name]
+    return head
+
+
 ANALYST_GROUPS = ("market", "social", "news", "fundamentals")
 LATER_GROUPS = ("research", "trader", "risk", "pm")
 
@@ -52,11 +97,12 @@ def from_lint(flags: list[dict], load_bearing_only: bool = False) -> list[dict]:
 def from_editor(findings: list[dict]) -> list[dict]:
     out = []
     for f in findings or []:
-        loc = f.get("location") or {}
+        loc = f.get("location") if isinstance(f.get("location"), dict) else {}
         out.append({
             "severity": f.get("severity", "minor"), "kind": f.get("kind") or "editor",
-            "source": loc.get("stage", ""), "field": loc.get("field", ""), "quote": loc.get("quote", ""),
-            "problem": f.get("problem", ""), "correct": f.get("correction"), "origin": "editor",
+            "source": normalize_stage(loc.get("stage")) if loc.get("stage") else "", "field": loc.get("field", ""),
+            "quote": loc.get("quote", ""), "problem": f.get("problem", ""), "correct": f.get("correction"),
+            "origin": "editor",
         })
     return out
 
@@ -109,9 +155,9 @@ def restart_group(errata: list[dict]) -> tuple[set[str], str | None]:
     """(analyst groups to re-run, first later group to re-run) for the
     load-bearing errata. Analysts re-run individually; from the first later
     group on, everything re-runs. No load-bearing erratum: re-run the PM."""
-    sources = {GROUP.get(e.get("source", ""), "pm") for e in errata if e.get("severity") == "load_bearing"}
+    sources = {GROUP.get(normalize_stage(e.get("source")), "pm") for e in errata if e.get("severity") == "load_bearing"}
     for loc in (loc for e in errata if e.get("severity") == "load_bearing" for loc in e.get("also_in") or []):
-        sources.add(GROUP.get(loc.split(".")[0], "pm"))
+        sources.add(GROUP.get(normalize_stage(loc), "pm"))
     analysts = {g for g in sources if g in ANALYST_GROUPS}
     later = [g for g in LATER_GROUPS if g in sources]
     first_later = "research" if analysts else (later[0] if later else "pm")

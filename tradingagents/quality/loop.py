@@ -18,6 +18,7 @@ import logging
 import re
 import time
 
+from tradingagents.budget import is_budget_exceeded
 from tradingagents.quality import editor, errata
 from tradingagents.quality.lint import Facts, lint_state
 
@@ -28,7 +29,42 @@ ANALYST_REPORT_KEYS = {"market": "market_report", "social": "sentiment_report", 
                        "fundamentals": "fundamentals_report"}
 VERSION = 1
 # Stages whose problems can force a revision: what a reader sees and acts on.
-_DECIDING = re.compile(r"^(research_manager|rm|portfolio_manager|pm|digest)", re.I)
+_DECIDING = {"research_manager", "portfolio_manager", "digest"}
+
+# Reader-facing hold reasons for a review that broke down (the server shows
+# hold_reason to the run's owner).
+REVISION_FAILED = "The revision couldn't be completed, so the open issues in this draft weren't fixed."
+REVISION_OVER_BUDGET = ("The run reached its token budget during the revision, so the open issues in this "
+                        "draft weren't fixed.")
+REVIEW_NOT_APPLIED = "The review's corrections couldn't be applied, so the report wasn't fully checked."
+
+
+def _location(finding: dict) -> dict:
+    loc = finding.get("location")
+    return loc if isinstance(loc, dict) else {}
+
+
+def _digest_field(finding: dict) -> str | None:
+    """The digest field an editor finding sits in ("headline",
+    "bear_points[3].title"), from its field or a "digest.<field>" stage."""
+    loc = _location(finding)
+    for raw in (loc.get("field"), loc.get("stage")):
+        field = editor.patch_location(raw) if isinstance(raw, str) else None
+        if field and field != "digest":
+            return field
+    return None
+
+
+def _patched(field: str | None, applied: list[dict]) -> bool:
+    """True when an applied patch covers ``field``: the same path, or a patch
+    to the whole item or field the finding sits in."""
+    if not field:
+        return False
+    for a in applied:
+        path = editor.patch_location(a.get("field"))
+        if path and (field == path or field.startswith(path + ".") or field.startswith(path + "[")):
+            return True
+    return False
 
 
 # A decision flag about the call itself re-runs the debate and ruling; one
@@ -67,9 +103,30 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
             except Exception:  # noqa: BLE001 — progress is best-effort
                 logger.debug("review progress event failed", exc_info=True)
 
+    reviewed: tuple | None = None   # (state, rating) of the last pass the editor reviewed
+
+    def hold_reviewed(attempt: int, exc: Exception) -> None:
+        """A revision broke down (a crash, the token budget): hold the last
+        reviewed draft with its open issues instead of failing a run whose
+        report is complete. Nothing more is spent."""
+        nonlocal final_state, rating, status, hold_reason
+        logger.error("revision %d of %s failed: %s", attempt, ticker, exc, exc_info=True)
+        final_state, rating = reviewed
+        status = "held"
+        hold_reason = REVISION_OVER_BUDGET if is_budget_exceeded(exc) else REVISION_FAILED
+        passes.append({"pass": attempt, "lint": None, "editor": None,
+                       "error": f"{type(exc).__name__}: {exc}"[:300], "relint": passes[-1].get("relint")})
+        report("held")
+
     for attempt in range(max_revisions + 1):
-        final_state, rating = graph.propagate(ticker, trade_date, on_progress=on_progress, callbacks=callbacks,
-                                              revision=revision, record=False, **propagate_kwargs)
+        try:
+            final_state, rating = graph.propagate(ticker, trade_date, on_progress=on_progress, callbacks=callbacks,
+                                                  revision=revision, record=False, **propagate_kwargs)
+        except Exception as exc:
+            if reviewed is None:
+                raise
+            hold_reviewed(attempt, exc)
+            break
         if not final_state.get("fact_sheet"):
             # No sheet, nothing to check against: publish as before the quality layer.
             status = "unchecked"
@@ -105,22 +162,38 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
             report("held")
             passes.append({"pass": attempt, "lint": lint, "editor": None, "error": str(exc)[:300]})
             break
-        patched, applied = editor.apply_patch(final_state.get("report_digest") or {}, review["digest_patch"],
-                                              Facts(final_state.get("fact_sheet")))
-        if final_state.get("report_digest") is not None:
-            final_state["report_digest"] = patched
-        relint = lint_state(final_state)
+        except Exception as exc:
+            # A fatal editor error (billing, the run's token budget) on a
+            # revision: the draft before it was reviewed and is complete.
+            if reviewed is None:
+                raise
+            hold_reviewed(attempt, exc)
+            break
+        try:
+            patched, applied = editor.apply_patch(final_state.get("report_digest") or {}, review.get("digest_patch"),
+                                                  Facts(final_state.get("fact_sheet")))
+            if final_state.get("report_digest") is not None:
+                final_state["report_digest"] = patched
+            relint = lint_state(final_state)
+        except Exception as exc:  # noqa: BLE001 — a malformed review holds, it never crashes a paid run
+            logger.error("applying the review for %s failed: %s", ticker, exc, exc_info=True)
+            status, hold_reason = "held", REVIEW_NOT_APPLIED
+            passes.append({"pass": attempt, "lint": lint, "editor": review,
+                           "error": f"{type(exc).__name__}: {exc}"[:300]})
+            report("held")
+            break
         # The editor checks every lint lead with the tools; one it dismissed
         # stays dismissed while its text is unchanged (staging ONDS, 2026-10-09:
         # a hold on lint flags the editor had verified as correct).
         dismissed |= {editor.dismissed_key(d) for d in review.get("lint_dismissed") or []}
         open_flags = [f for f in _load_bearing(relint) if editor.dismissed_key(f) not in dismissed]
         editor_lb = [f for f in review["findings"] if f.get("severity") == "load_bearing"
-                     and _DECIDING.match(str((f.get("location") or {}).get("stage", "")))]
+                     and errata.normalize_stage(_location(f).get("stage")) in _DECIDING]
         # Only the ruling, the decision and the digest can force a revision; a
-        # digest finding the patch fixed is closed by it.
-        unpatched = [f for f in editor_lb if not str((f.get("location") or {}).get("stage", "")).startswith("digest")
-                     or not applied]
+        # digest finding is closed only by an applied patch to its own field
+        # (an exit-trigger tidy-up must not close a wrong headline).
+        unpatched = [f for f in editor_lb if errata.normalize_stage(_location(f).get("stage")) != "digest"
+                     or not _patched(_digest_field(f), applied)]
         note = review.get("editor_note") or note
         passes.append({"pass": attempt, "lint": lint, "editor": review, "patch_applied": applied,
                        "relint": relint, "open": len(open_flags), "decision_flags": review["decision_flags"]})
@@ -130,6 +203,7 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
             status, hold_reason = "held", "forced hold for testing (quality_force_hold_ticker)"
             report("held")
             break
+        reviewed = (final_state, rating)
         report("checked", facts=counts["facts"], calcs=counts["calcs"])
         if applied:
             report("patched", fields=len(applied))

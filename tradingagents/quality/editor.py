@@ -20,11 +20,18 @@ import operator
 import re
 import time
 
+from tradingagents.budget import is_budget_exceeded
 from tradingagents.quality.lint import Facts, lint_text, stage_texts
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_ROUNDS = 10
+# A careful review of a long record takes 12–15 tool rounds (staging,
+# 2026-10-09: one needed 14 against a cap of 10, and the whole review was
+# thrown away and retried until the budget ran out, then held). On the last
+# rounds the model is told how many remain and pushed to submit; past the cap
+# it gets one forced submit_review instead of the review being discarded.
+MAX_TOOL_ROUNDS = 16
+FINAL_ROUNDS = 2  # rounds at the end on which the model is told to submit
 RETRY_BUDGET_SECONDS = 600  # plan: retry with backoff for up to 10 minutes, then hold
 
 
@@ -41,6 +48,9 @@ _FATAL_STATUS = {400, 401, 402, 403, 404}
 
 
 def is_fatal(exc: Exception) -> bool:
+    # The run's token budget is spent: a retry only spends more past the cap.
+    if is_budget_exceeded(exc):
+        return True
     message = str(exc).lower()
     if any(m in message for m in _FATAL_MARKERS):
         return True
@@ -55,19 +65,42 @@ _OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, as
         ast.Pow: operator.pow, ast.USub: operator.neg, ast.UAdd: operator.pos}
 
 
+_MAX_EXPONENT = 100
+_MAX_MAGNITUDE = 1e100
+
+
+def _checked(value):
+    """A finite, bounded number: an arithmetic tool must not hang on 9**9**9
+    or return a 10,000-digit integer."""
+    if isinstance(value, complex):
+        raise ValueError("the result is not a real number")
+    if isinstance(value, int) and value.bit_length() > 333:   # ~1e100
+        raise ValueError("number too large")
+    if isinstance(value, float) and not (abs(value) <= _MAX_MAGNITUDE):   # also rejects inf and nan
+        raise ValueError("number too large or not finite")
+    return value
+
+
 def calc(expression: str) -> str:
     """Arithmetic only: numbers, + − × ÷, powers and parentheses."""
     def ev(node):
-        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-            return node.value
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+            return _checked(node.value)
         if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
-            return _OPS[type(node.op)](ev(node.left), ev(node.right))
+            left, right = ev(node.left), ev(node.right)
+            if isinstance(node.op, ast.Pow) and abs(right) > _MAX_EXPONENT:
+                raise ValueError(f"exponent above {_MAX_EXPONENT}")
+            if isinstance(node.op, ast.Pow) and isinstance(left, int) and isinstance(right, int) and right >= 0:
+                left = float(left)   # float powers overflow at once instead of building a huge int
+            return _checked(_OPS[type(node.op)](left, right))
         if isinstance(node, ast.UnaryOp) and type(node.op) in _OPS:
-            return _OPS[type(node.op)](ev(node.operand))
+            return _checked(_OPS[type(node.op)](ev(node.operand)))
         raise ValueError("only numbers and + - * / ** ( ) are allowed")
 
     try:
         cleaned = expression.replace(",", "").replace("×", "*").replace("÷", "/").replace("−", "-")
+        if len(cleaned) > 500:
+            raise ValueError("expression too long")
         value = ev(ast.parse(cleaned, mode="eval").body)
         return f"{value:.6g}"
     except Exception as exc:  # noqa: BLE001 — the model sees the error and retries
@@ -172,10 +205,49 @@ def build_prompt(state: dict, lint_report: dict, earlier_errata: str = "") -> st
     )
 
 
+def _bind_submit(llm):
+    """The model bound with tool_choice forcing submit_review, or None when
+    the binding doesn't take the argument."""
+    try:
+        return llm.bind_tools(TOOLS, tool_choice="submit_review")
+    except TypeError:
+        return None
+    except Exception as exc:  # noqa: BLE001 — forcing is an optimisation; the plain binding still works
+        logger.debug("editor: tool_choice binding failed: %s", exc)
+        return None
+
+
+def _submit_args(reply) -> dict | None:
+    for call in getattr(reply, "tool_calls", None) or []:
+        if call.get("name") == "submit_review":
+            return call.get("args") or {}
+    return None
+
+
 def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None) -> dict:
     from langchain_core.messages import HumanMessage, ToolMessage
 
     bound = llm.bind_tools(TOOLS)
+    forced: list = []   # [bound-with-tool_choice or None], resolved on first use
+    config = {"callbacks": callbacks or []}
+
+    def invoke_forced(messages):
+        """One call that must submit: tool_choice=submit_review where the
+        binding supports it and the provider accepts it (Anthropic rejects a
+        forced tool with extended thinking), else the plain binding with the
+        instruction already in ``messages``."""
+        if not forced:
+            forced.append(_bind_submit(llm))
+        if forced[0] is not None:
+            try:
+                return forced[0].invoke(messages, config=config)
+            except Exception as exc:  # noqa: BLE001 — fall back to the instruction alone
+                if is_budget_exceeded(exc):
+                    raise
+                logger.warning("editor: forced submit_review was rejected (%s); asking instead", exc)
+                forced[0] = None
+        return bound.invoke(messages, config=config)
+
     # The ~50K-token brief and record are re-sent on every tool round; cached,
     # repeats bill at a fraction of the input price (staging eval, 2026-10-08:
     # 14 rounds, 737K input tokens for one review).
@@ -188,12 +260,18 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None) -> d
     if type(llm).__name__ == "ChatAnthropic" or str(getattr(llm, "model_name", "")).startswith("anthropic/"):
         block["cache_control"] = {"type": "ephemeral"}
     messages = [HumanMessage(content=[block])]
-    for _ in range(MAX_TOOL_ROUNDS):
-        reply = bound.invoke(messages, config={"callbacks": callbacks or []})
+    must_submit = False
+    for round_no in range(1, MAX_TOOL_ROUNDS + 1):
+        left = MAX_TOOL_ROUNDS - round_no
+        reply = invoke_forced(messages) if must_submit or left == 0 else bound.invoke(messages, config=config)
         messages.append(reply)
         calls = getattr(reply, "tool_calls", None) or []
         if not calls:
-            messages.append(HumanMessage(content="Finish by calling submit_review."))
+            # A round without a tool call still counts; the next one must submit.
+            logger.warning("editor: round %d made no tool call; asking for submit_review", round_no)
+            messages.append(HumanMessage(content=(
+                f"You made no tool call. Call submit_review now with your review ({left} round(s) left).")))
+            must_submit = True
             continue
         for call in calls:
             name, args = call["name"], call.get("args") or {}
@@ -205,6 +283,19 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None) -> d
                 on_step({"kind": "calc" if name == "calc" else "fact",
                          "detail": str(args.get("expression") if name == "calc" else args.get("key", ""))[:80]})
             messages.append(ToolMessage(content=result, tool_call_id=call["id"]))
+        if 0 < left <= FINAL_ROUNDS:
+            messages.append(HumanMessage(content=(
+                f"{left} tool round(s) left. Finish your checks and call submit_review"
+                + (" on the next round." if left == 1 else " before they run out."))))
+            must_submit = must_submit or left == 1
+    # The cap is spent with a full tool history: one forced submission from it
+    # rather than discarding the review.
+    messages.append(HumanMessage(content=(
+        "No tool rounds are left. Call submit_review now with the review as it stands: "
+        "report what you checked; leave unchecked items out.")))
+    args = _submit_args(invoke_forced(messages))
+    if args is not None:
+        return args
     raise RuntimeError("the editor did not submit a review")
 
 
@@ -222,11 +313,13 @@ def _resolve_dismissals(raw, flags: list[dict]) -> list[dict]:
     """The editor's dismissals as the flags they name (kind, stage, field,
     quote) with its reason; an unknown id is ignored."""
     out = []
-    for d in raw or []:
-        m = re.fullmatch(r"\s*L?(\d+)\s*", str((d or {}).get("id", "")))
+    for d in _as_list(raw):
+        # {"id": "L3", "reason": …} as the schema says, or a bare "L3" / 3.
+        ident, reason = (d.get("id", ""), d.get("reason")) if isinstance(d, dict) else (d, "")
+        m = re.fullmatch(r"\s*L?(\d+)\s*", str(ident), re.I)
         if m and 1 <= int(m.group(1)) <= len(flags):
             f = flags[int(m.group(1)) - 1]
-            out.append({k: f.get(k) for k in ("kind", "stage", "field", "quote")} | {"reason": str(d.get("reason") or "")[:400]})
+            out.append({k: f.get(k) for k in ("kind", "stage", "field", "quote")} | {"reason": str(reason or "")[:400]})
     return out
 
 
@@ -276,40 +369,88 @@ _PATCHABLE = {"headline", "bull_thesis", "bull_points", "bear_thesis", "bear_poi
               "trader_excerpt", "conviction_note", "exit_triggers", "sizing", "entry_style", "review_cycle"}
 
 
+def _patch_text(value) -> str | None:
+    """A patch value as reader text, or None when it isn't text: a list, a
+    number, or a dict that isn't a {title, detail} point."""
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _patch_point(value) -> dict | None:
+    """A whole-item replacement for a {title, detail} point, from a dict with
+    string title/detail (other keys dropped), else None."""
+    if not isinstance(value, dict):
+        return None
+    point = {k: value[k] for k in ("title", "detail") if isinstance(value.get(k), str)}
+    return point if point.get("title") or point.get("detail") else None
+
+
+def patch_location(field) -> str | None:
+    """A patch's or a finding's digest field, normalised: "digest.headline",
+    "Headline" and "headline" all read "headline"; "bear_points[3].title"
+    stays as is. None when it isn't a digest path."""
+    if not isinstance(field, str):
+        return None
+    text = re.sub(r"\s+", "", field).removeprefix("digest.").removeprefix("report_digest.")
+    m = _PATH.match(text)
+    return text.lower() if m else None
+
+
 def apply_patch(digest: dict, patch: list[dict], facts: Facts) -> tuple[dict, list[dict]]:
     """(patched digest, applied patches). A replacement whose text fails the
     lint (a figure off the sheet, a wrong direction) is not applied: a list
     item is deleted instead, a text field keeps its original text. Unknown
-    fields are ignored; the rating is never touched."""
+    fields are ignored; the rating is never touched.
+
+    The editor's output is model output: a malformed item (a field that isn't
+    a path, a list or number where text belongs, an empty replacement) is
+    skipped, never applied and never fatal. An empty replacement never blanks
+    a field: deleting is its own action."""
     out = json.loads(json.dumps(digest or {}))
     applied = []
+    items = [p for p in _as_list(patch) if isinstance(p, dict) and patch_location(p.get("field"))]
+
+    def parts(p: dict):
+        return _PATH.match(patch_location(p.get("field")))
 
     def order(p: dict):
         # Indices refer to the digest as written: replacements first, then
         # deletions from the highest index down, so none shifts another.
-        m_ = _PATH.match((p.get("field") or "").strip())
-        index = int(m_.group("index")) if m_ and m_.group("index") else -1
+        m_ = parts(p)
+        index = int(m_.group("index")) if m_.group("index") else -1
         return (p.get("action") == "delete", -index)
 
-    for p in sorted(patch or [], key=order):
-        m = _PATH.match((p.get("field") or "").strip())
-        if not m or m.group("field") not in _PATCHABLE or m.group("field") not in out:
-            continue
-        action, value = p.get("action"), p.get("value") or ""
+    for p in sorted(items, key=order):
+        m = parts(p)
         field, index, sub = m.group("field"), m.group("index"), m.group("sub")
+        if field not in _PATCHABLE or field not in out:
+            continue
+        action = p.get("action")
+        if action not in ("replace", "delete"):
+            continue
+        target = out.get(field)
+        value = p.get("value")
+        point = None
         if action == "replace":
+            whole_point = index is not None and not sub and isinstance(target, list) \
+                and int(index) < len(target) and isinstance(target[int(index)], dict)
+            point = _patch_point(value) if whole_point else None
+            text = " ".join(point.values()) if point else _patch_text(value)
+            if text is None or not text.strip():
+                continue   # nothing usable to put there: never blank a field
             # A replacement the relint would count as open (blocking, or
             # load-bearing in a load-bearing field such as the headline) is not
             # applied. A list item becomes a deletion; a text field keeps its
             # original text, so the relint still sees the open flag and the loop
             # revises (an empty headline would publish with nothing flagged).
-            bad = [f for f in lint_text(value, facts, "editor", f"digest.{field}")
+            bad = [f for f in lint_text(text, facts, "editor", f"digest.{field}")
                    if f.blocking or f.severity == "load_bearing"]
             if bad and index is None:
                 continue
             if bad:
                 action = "delete"
-        target = out.get(field)
+            value = text
         if index is None:
             if action == "delete":
                 out[field] = [] if isinstance(target, list) else ("" if isinstance(target, str) else None)
@@ -323,8 +464,13 @@ def apply_patch(digest: dict, patch: list[dict], facts: Facts) -> tuple[dict, li
                 continue
             if action == "delete":
                 target.pop(i)
+            elif point is not None:
+                target[i] = {**target[i], **point}
             elif sub and isinstance(target[i], dict):
-                target[i][sub] = value
+                if sub not in target[i] or isinstance(target[i][sub], str) or target[i][sub] is None:
+                    target[i][sub] = value
+                else:
+                    continue   # not a text field
             elif isinstance(target[i], str):
                 target[i] = value
             else:

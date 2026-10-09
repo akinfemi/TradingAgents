@@ -409,3 +409,285 @@ def test_the_review_reports_its_progress():
     revising = next(r for _n, r in events if r and r["step"] == "revising")
     assert revising["restart_from"] == "trader" and revising["corrections"] == 1
     assert next(r for _n, r in events if r and r["step"] == "passed")["status"] == "revised"
+
+
+# ---- release review 2026-10-09 -------------------------------------------------------------
+
+
+class RunBudgetExceeded(RuntimeError):
+    """The worker's token-cap error (server/worker/token_cap.py), matched by name."""
+
+
+def _submit(note=""):
+    from langchain_core.messages import AIMessage
+
+    return AIMessage(content="", tool_calls=[{"name": "submit_review", "id": "s", "args": {
+        "findings": [], "digest_patch": [], "decision_flags": [], "editor_note": note, "hold_reason": ""}}])
+
+
+def _lookup(n):
+    from langchain_core.messages import AIMessage
+
+    return AIMessage(content="", tool_calls=[{"name": "fact", "args": {"key": "revenue.2026Q2"}, "id": f"c{n}"}])
+
+
+@pytest.mark.unit
+def test_a_review_needing_fourteen_rounds_is_not_thrown_away():
+    """Staging 2026-10-09: a review needed 14 tool rounds against a cap of 10
+    and was discarded and retried until the editor budget ran out."""
+    class Careful:
+        calls = 0
+
+        def bind_tools(self, _tools, **_kw):
+            return self
+
+        def invoke(self, messages, config=None):
+            Careful.calls += 1
+            return _submit("Checked.") if Careful.calls == 14 else _lookup(Careful.calls)
+
+    out = editor.review(Careful(), state(), {"flags": []}, budget_seconds=0, sleep=lambda _s: None)
+    assert out["editor_note"] == "Checked." and Careful.calls == 14
+
+
+@pytest.mark.unit
+def test_at_the_cap_the_editor_is_forced_to_submit_instead_of_discarding():
+    seen = {"forced": 0, "plain": 0, "warned": False}
+
+    class Forced:
+        def invoke(self, messages, config=None):
+            seen["forced"] += 1
+            return _submit("Forced.")
+
+    class Endless:
+        """Looks up facts forever unless tool_choice forces the submission."""
+
+        def bind_tools(self, _tools, tool_choice=None):
+            return Forced() if tool_choice == "submit_review" else self
+
+        def invoke(self, messages, config=None):
+            seen["plain"] += 1
+            seen["warned"] = seen["warned"] or any("round(s) left" in str(m.content) for m in messages)
+            return _lookup(seen["plain"])
+
+    out = editor.review(Endless(), state(), {"flags": []}, budget_seconds=0, sleep=lambda _s: None)
+    assert out["editor_note"] == "Forced."
+    assert seen["forced"] == 1 and seen["plain"] == editor.MAX_TOOL_ROUNDS - 1 and seen["warned"]
+
+
+@pytest.mark.unit
+def test_without_tool_choice_the_last_attempt_asks_for_the_review():
+    class Plain:
+        """bind_tools takes no tool_choice; submits once told no rounds are left."""
+        calls = 0
+
+        def bind_tools(self, _tools):
+            return self
+
+        def invoke(self, messages, config=None):
+            Plain.calls += 1
+            told = "No tool rounds are left" in str(messages[-1].content)
+            return _submit("Asked.") if told else _lookup(Plain.calls)
+
+    out = editor.review(Plain(), state(), {"flags": []}, budget_seconds=0, sleep=lambda _s: None)
+    assert out["editor_note"] == "Asked." and Plain.calls == editor.MAX_TOOL_ROUNDS + 1
+
+
+@pytest.mark.unit
+def test_a_round_without_a_tool_call_is_followed_by_a_forced_submit():
+    seen = []
+
+    class Forced:
+        def invoke(self, messages, config=None):
+            seen.append("forced")
+            return _submit("ok")
+
+    class Chatty:
+        def bind_tools(self, _tools, tool_choice=None):
+            return Forced() if tool_choice else self
+
+        def invoke(self, messages, config=None):
+            from langchain_core.messages import AIMessage
+
+            seen.append("plain")
+            return AIMessage(content="I think the report is fine.")
+
+    assert editor.review(Chatty(), state(), {"flags": []}, budget_seconds=0, sleep=lambda _s: None)["editor_note"] == "ok"
+    assert seen == ["plain", "forced"]
+
+
+@pytest.mark.unit
+def test_a_rejected_forced_submit_falls_back_to_asking():
+    """Anthropic rejects a forced tool with extended thinking (a 400): the
+    review must not fail on it."""
+    class Rejects:
+        def invoke(self, *_a, **_k):
+            raise RuntimeError("Error code: 400 - Thinking may not be enabled when tool_choice forces tool use.")
+
+    class Model:
+        calls = 0
+
+        def bind_tools(self, _tools, tool_choice=None):
+            return Rejects() if tool_choice else self
+
+        def invoke(self, messages, config=None):
+            Model.calls += 1
+            return _submit("ok") if "No tool rounds are left" in str(messages[-1].content) else _lookup(Model.calls)
+
+    assert editor.review(Model(), state(), {"flags": []}, budget_seconds=0, sleep=lambda _s: None)["editor_note"] == "ok"
+
+
+@pytest.mark.unit
+def test_a_token_budget_stop_is_never_retried():
+    class OverBudget:
+        calls = 0
+
+        def bind_tools(self, _tools, **_kw):
+            return self
+
+        def invoke(self, *_a, **_k):
+            OverBudget.calls += 1
+            raise RunBudgetExceeded("Run stopped at 3,060,000 tokens, over its budget of 3,000,000")
+
+    with pytest.raises(RunBudgetExceeded):
+        editor.review(OverBudget(), state(), {"flags": []}, budget_seconds=12, sleep=lambda _s: None)
+    assert OverBudget.calls == 1
+    assert editor.is_fatal(RunBudgetExceeded("x"))
+
+
+@pytest.mark.unit
+def test_a_revision_that_runs_out_of_budget_holds_the_reviewed_draft():
+    first = state(pm="Rating: Hold (first)")
+
+    class Graph(FakeGraph):
+        def propagate(self, *a, revision=None, **k):
+            if revision is not None:
+                raise RunBudgetExceeded("Run stopped at 3,060,000 tokens")
+            return super().propagate(*a, revision=revision, **k)
+
+    graph = Graph([first])
+    final, rating = loop.run_with_quality(graph, "ONDS", "2026-10-05", None,
+                                          review_fn=review_with({"decision_flags": ["price target not derived"]}))
+    q = final["quality"]
+    assert q["status"] == "held" and q["hold_reason"] == loop.REVISION_OVER_BUDGET
+    assert final["final_trade_decision"] == "Rating: Hold (first)" and rating == "Hold"
+    assert "RunBudgetExceeded" in q["passes"][-1]["error"] and q["lint"] == q["passes"][0]["relint"]
+    assert graph.logged == 1 and graph.recorded == 0
+
+
+@pytest.mark.unit
+def test_a_revision_whose_review_fails_holds_the_reviewed_draft():
+    graph = FakeGraph([state(pm="Rating: Hold (first)"), state(pm="Rating: Hold (second)")])
+    final, _ = loop.run_with_quality(
+        graph, "ONDS", "2026-10-05", None,
+        review_fn=review_with({"decision_flags": ["price target not derived"]},
+                              RuntimeError("Error code: 402 - credit balance is too low")))
+    assert final["quality"]["status"] == "held" and final["quality"]["hold_reason"] == loop.REVISION_FAILED
+    assert final["final_trade_decision"] == "Rating: Hold (first)"
+
+
+@pytest.mark.unit
+def test_a_budget_stop_on_the_first_pass_still_fails_the_run():
+    graph = FakeGraph([state()])
+    with pytest.raises(RunBudgetExceeded):
+        loop.run_with_quality(graph, "ONDS", "2026-10-05", None, review_fn=review_with(RunBudgetExceeded("x")))
+
+
+@pytest.mark.unit
+def test_malformed_patch_items_are_skipped_not_fatal():
+    digest = {"headline": "x", "bull_points": [{"title": "a", "detail": "b"}], "exit_triggers": [{"title": "t", "detail": "d"}]}
+    facts = editor.Facts(SHEET)
+    out, applied = editor.apply_patch(digest, [
+        {"field": "bull_points[0]", "action": "replace", "value": {"title": "New", "detail": "Orders grew", "x": 1}},
+        {"field": "exit_triggers", "action": "replace", "value": [{"title": "t2", "detail": "d2"}]},
+        {"field": 3, "action": "delete"},
+        {"field": "headline", "action": "replace", "value": None},
+        {"field": "headline", "action": "replace", "value": "  "},
+        {"field": "bull_points[0].detail", "action": "replace", "value": ["a", "b"]},
+        "not a patch",
+    ], facts)
+    assert out["bull_points"] == [{"title": "New", "detail": "Orders grew"}]
+    assert out["exit_triggers"] == digest["exit_triggers"] and out["headline"] == "x"
+    assert applied == [{"field": "bull_points[0]", "action": "replace"}]
+    # A JSON-encoded patch list and a "digest."-prefixed path still apply.
+    out, applied = editor.apply_patch(digest, '[{"field": "digest.headline", "action": "replace", "value": "Hold"}]', facts)
+    assert out["headline"] == "Hold" and len(applied) == 1
+
+
+@pytest.mark.unit
+def test_dismissals_accept_plain_ids_and_a_json_string():
+    flags = [{"kind": "k1", "stage": "pm", "field": "pm", "quote": "q1"},
+             {"kind": "k2", "stage": "pm", "field": "pm", "quote": "q2"}]
+    assert [d["quote"] for d in editor._resolve_dismissals(["L2", 1, None, {"id": "l1", "reason": "ok"}], flags)] == [
+        "q2", "q1", "q1"]
+    assert [d["quote"] for d in editor._resolve_dismissals('["L1"]', flags)] == ["q1"]
+    assert editor._resolve_dismissals("L1", flags)[0]["quote"] == "q1"
+
+
+@pytest.mark.unit
+def test_a_review_that_cannot_be_applied_holds_instead_of_crashing(monkeypatch):
+    def broken(*_a, **_k):
+        raise TypeError("unhashable type: 'dict'")
+
+    monkeypatch.setattr(editor, "apply_patch", broken)
+    graph = FakeGraph([state()])
+    final, _ = loop.run_with_quality(graph, "ONDS", "2026-10-05", None, review_fn=review_with({}))
+    assert final["quality"]["status"] == "held" and final["quality"]["hold_reason"] == loop.REVIEW_NOT_APPLIED
+    assert "TypeError" in final["quality"]["passes"][-1]["error"] and graph.recorded == 0
+
+
+@pytest.mark.unit
+def test_a_patch_elsewhere_does_not_close_a_digest_finding():
+    """Release review 2026-10-09: an exit-trigger tidy-up closed a wrong
+    headline the editor could not fix, and the report published."""
+    st = {**state(), "report_digest": {"headline": "The company carries no debt", "exit_triggers": [{"title": "a", "detail": "b"}]}}
+    finding = {"severity": "load_bearing", "location": {"stage": "digest", "field": "headline",
+                                                       "quote": "The company carries no debt"}, "problem": "it has notes"}
+    tidy = [{"field": "exit_triggers[0].detail", "action": "replace", "value": "A close below support"}]
+    graph = FakeGraph([st, {**st}])
+    final, _ = loop.run_with_quality(graph, "ONDS", "2026-10-05", None,
+                                     review_fn=review_with({"findings": [finding], "digest_patch": tidy}, {}))
+    assert final["quality"]["status"] == "revised" and len(graph.calls) == 2
+
+
+@pytest.mark.unit
+def test_a_patch_to_the_findings_own_field_closes_it():
+    st = {**state(), "report_digest": {"headline": "The company carries no debt"}}
+    finding = {"severity": "load_bearing", "location": {"stage": "digest.headline", "quote": "carries no debt"},
+               "problem": "it has notes"}
+    fix = [{"field": "Headline", "action": "replace", "value": "Hold: orders are growing"}]
+    graph = FakeGraph([st])
+    final, _ = loop.run_with_quality(graph, "ONDS", "2026-10-05", None,
+                                     review_fn=review_with({"findings": [finding], "digest_patch": fix}))
+    assert final["quality"]["status"] == "clean" and final["report_digest"]["headline"] == "Hold: orders are growing"
+
+
+@pytest.mark.unit
+def test_stage_aliases_restart_the_right_group():
+    lb = [{"severity": "load_bearing"}]
+    assert errata.restart_group([{**lb[0], "source": "rm"}]) == (set(), "research")
+    assert errata.restart_group([{**lb[0], "source": "Research Manager"}]) == (set(), "research")
+    assert errata.restart_group([{**lb[0], "source": "PM"}]) == (set(), "pm")
+    assert errata.restart_group([{**lb[0], "source": "digest.headline"}]) == (set(), "pm")
+    assert errata.restart_group([{**lb[0], "source": "Market Analyst"}]) == ({"market"}, "research")
+    assert errata.restart_group([{**lb[0], "source": "trader", "also_in": ["rm.rm"]}]) == (set(), "research")
+
+
+@pytest.mark.unit
+def test_an_editor_finding_at_stage_rm_forces_a_revision_of_the_ruling():
+    finding = {"severity": "load_bearing", "location": {"stage": "Research Manager", "quote": "bulls win"},
+               "problem": "the ruling misreads the debate"}
+    graph = FakeGraph([state(), state()])
+    final, _ = loop.run_with_quality(graph, "ONDS", "2026-10-05", None,
+                                     review_fn=review_with({"findings": [finding]}, {}))
+    assert final["quality"]["passes"][0]["restart"]["from"] == "research"
+
+
+@pytest.mark.unit
+def test_calc_refuses_runaway_powers():
+    import time
+
+    started = time.monotonic()
+    for expression in ("9**9**9", "10**400", "2**1000", "1e308*10", "9" * 200, "(-8)**0.5"):
+        assert editor.calc(expression).startswith("error"), expression
+    assert time.monotonic() - started < 1
+    assert editor.calc("1.1**12") == "3.13843" and editor.calc("2**-3") == "0.125"
