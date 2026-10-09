@@ -19,8 +19,8 @@ Checks (numbered as in the plan):
    reader-facing digest.
 
 Severity: ``load_bearing`` when the location is load-bearing (the
-headline, the PM's summary or thesis, the RM ruling, bull and bear key
-points, exit triggers, the price target, Key Numbers); otherwise
+headline, the PM's summary or thesis, the RM ruling, the digest's bull
+and bear theses, exit triggers, the price target); otherwise
 ``minor``; ``style`` for sanitiser findings. Whether a flag BLOCKS a stage
 (the gate's fix-up turn) depends on its kind, not its severity: an error
 in an analyst report is the one every later stage repeats.
@@ -29,8 +29,10 @@ in an analyst report is the one every later stage repeats.
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass, field
+from bisect import bisect_left, bisect_right
+from dataclasses import asdict, dataclass, field, replace
 from difflib import SequenceMatcher
+from functools import lru_cache
 
 # ---- the flag ----------------------------------------------------------------------
 
@@ -41,7 +43,7 @@ BLOCKING_KINDS = {"cited_mismatch", "unknown_key", "direction", "misattributed",
 LOAD_BEARING_FIELDS = {
     "digest.headline", "digest.bull_thesis", "digest.bear_thesis", "digest.ruling",
     "digest.exit_triggers", "pm", "pm.executive_summary", "pm.investment_thesis",
-    "pm.price_target", "rm", "key_numbers",
+    "pm.price_target", "rm",
 }
 
 
@@ -102,32 +104,45 @@ class Facts:
 _SCALE = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mm": 1e6, "million": 1e6, "b": 1e9, "bn": 1e9,
           "billion": 1e9, "t": 1e12, "trillion": 1e12}
 _NUM = r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+_SCALES = r"trillion|billion|million|thousand|bn|mm|[kmbt]"
 _FIGURE = re.compile(
-    r"(?P<neg>[−\-–]|\()?\s?"
-    r"(?:(?P<cur>\$)\s?" + _NUM + r"\s?(?P<scale>trillion|billion|million|thousand|bn|mm|[kmbt])?\b"
+    r"(?P<neg>[−\-–+]|\()?\s?"
+    r"(?:(?P<cur>\$)\s?" + _NUM + r"\s?(?P<scale>" + _SCALES + r")?\b"
     r"|" + _NUM.replace("num", "num2") + r"\s?(?P<unit>%|pp|x|×)(?![\w])"
     r")",
     re.IGNORECASE,
 )
-_CITE_RAW = re.compile(r"\[F:([^\]\s]+)\]")
+# A citation, also "[F: a]", "[F:a, F:b]" and "[F:a; F:b]".
+_CITE_RAW = re.compile(r"\[F:\s*([^\[\]]{1,200}?)\s*\]")
+_CITE_KEY = re.compile(r"[A-Za-z0-9_][\w.\-]*")
 
 
 class _Cites:
     """[F:key] citations, with a combined "[F:fcf.2026Q1/2026Q2]" read as the
-    two keys it names (fcf.2026Q1 and fcf.2026Q2)."""
+    two keys it names (fcf.2026Q1 and fcf.2026Q2), and a list "[F:a, F:b]"
+    as its keys."""
 
     def findall(self, text: str) -> list[str]:
         out = []
         for raw in _CITE_RAW.findall(text or ""):
-            parts = [p.removeprefix("F:") for p in raw.split("/") if p]
-            if len(parts) > 1 and all("." in p for p in parts):
-                out.extend(parts)                       # [F:ema10.value/F:sma50.value]
-            elif len(parts) > 1 and "." in parts[0]:
-                base = parts[0].split(".", 1)[0]       # [F:fcf.2026Q1/2026Q2]
-                out.append(parts[0])
-                out.extend(f"{base}.{p}" for p in parts[1:])
-            else:
-                out.append(raw)
+            base = None
+            for group in re.split(r"\s*[,;]\s*", raw):
+                group = group.strip().removeprefix("F:").strip()
+                if group.startswith(".") and base:      # "[F:revenue_yoy.2025Q3, .2025Q4]"
+                    group = base + group
+                parts = [p.strip().removeprefix("F:").strip() for p in re.split(r"/|→|->", group)]
+                parts = [p for p in parts if p]
+                if not parts or not all(_CITE_KEY.fullmatch(p) for p in parts):
+                    continue                            # prose in brackets, not a key
+                base = parts[0].split(".", 1)[0] if "." in parts[0] else base
+                if len(parts) > 1 and all("." in p for p in parts):
+                    out.extend(parts)                   # [F:ema10.value/F:sma50.value]
+                elif len(parts) > 1 and "." in parts[0]:
+                    base = parts[0].split(".", 1)[0]   # [F:fcf.2026Q1/2026Q2]
+                    out.append(parts[0])
+                    out.extend(f"{base}.{p}" for p in parts[1:])
+                else:
+                    out.append("/".join(parts))
         return out
 
 
@@ -146,6 +161,36 @@ class Figure:
     step: float = 0.0             # the precision written: "$5" → 1.0, "$7.00" → 0.01, "$83.8M" → 0.1e6
     range_low: float | None = None  # "42–49%": this figure is 49 and the range starts at 42
     at_least: bool = False        # "1,200%+": a floor, not a value
+    signed: bool = False          # written with an explicit sign ("−$86.1M", "+$5M")
+    in_range: bool = False        # the low end of a range ("$80M" in "$80M–$90M")
+    lead: str = ""                # the words just before it in its clause ("a profit of")
+    sent_start: int = 0           # where its sentence starts in the text
+    scale: float = 1.0            # "$71.61B" → 1e9
+
+
+class _Sentences:
+    """Sentence bounds of one text, computed once (a run-on text of 40k
+    characters made per-figure scans quadratic)."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.dots = [m.start() for m in re.finditer(r"\. ", text)]
+        self.nls = [m.start() for m in re.finditer(r"\n", text)]
+
+    def bounds(self, start: int, end: int) -> tuple[int, int]:
+        """(left, right) as ``text[left + 1: right + 1]`` is the sentence."""
+        i = bisect_right(self.dots, start - 2) - 1
+        j = bisect_right(self.nls, start - 1) - 1
+        left = max(self.dots[i] if i >= 0 else -1, self.nls[j] if j >= 0 else -1)
+        i = bisect_left(self.dots, end)
+        j = bisect_left(self.nls, end)
+        rights = [x for x in (self.dots[i] if i < len(self.dots) else None,
+                              self.nls[j] if j < len(self.nls) else None) if x is not None]
+        return left, (min(rights) if rights else len(self.text))
+
+    def at(self, start: int, end: int) -> str:
+        left, right = self.bounds(start, end)
+        return self.text[left + 1: right + 1].strip()
 
 
 def _sentence_at(text: str, start: int, end: int) -> str:
@@ -155,56 +200,134 @@ def _sentence_at(text: str, start: int, end: int) -> str:
     return text[left + 1: right + 1].strip()
 
 
-def figures(text: str) -> list[Figure]:
-    """Money, percentages and multiples in ``text``, each with the [F:…] keys
-    cited right after it (before the next figure)."""
+# The figure (or bare number) just before a dash or "and": "$80M" in
+# "$80M–$90M", "42" in "42–49%", "$5" in "between $5 and $7".
+_LEFT = (r"(?<![\w.,\-–−/:$])(?P<lcur>\$)?\s?(?P<lnum>\d[\d,]*(?:\.\d+)?)\s?"
+         r"(?P<lunit>%|pp|x|×|" + _SCALES + r")?")
+_LEFT_OF_DASH = re.compile(_LEFT + r"(?:\s*\[F:[^\[\]]*\])*\s*\)?\s*$", re.I)
+_LEFT_OF_AND = re.compile(r"\bbetween\s+" + _LEFT + r"\s+and\s+$", re.I)
+_PERIOD_LABEL = re.compile(r"(?:\bQ[1-4]|\bFY|\bH[12]|\bCY|\bfiscal)\s*$", re.I)
+
+
+def _left_figure(m: re.Match | None, before: str, kind: str, scale: float):
+    """(joined, low): whether a dash joins this figure to a figure on its
+    left (a range or a subtraction, so the dash is not a sign), and the
+    range's low end when it is a range of one kind of figure. A year or a
+    quarter label ("Q2 2026 −$86.1M") is not a figure."""
+    if not m:
+        return False, None
+    lcur, lnum, lunit = m.group("lcur"), m.group("lnum"), (m.group("lunit") or "").lower()
+    if not lcur and not lunit and (re.fullmatch(r"(?:19|20)\d\d", lnum)
+                                   or _PERIOD_LABEL.search(before[:m.start("lnum")])):
+        return False, None
+    lkind = ("pct" if lunit in ("%", "pp") else "x" if lunit in ("x", "×")
+             else "usd" if lcur or lunit in _SCALE else kind)
+    if lkind != kind:
+        return True, None
+    try:
+        low = float(lnum.replace(",", ""))
+    except ValueError:
+        return True, None
+    if kind == "usd":
+        low *= _SCALE.get(lunit, scale)
+    return True, low
+
+
+def _cite_run(text: str, start: int, stop: int, window: int = 80) -> str:
+    """The citations after a figure: those that start within ``window``
+    characters of it, and the run of citations that continues them
+    ("[F:a.2026Q1][F:a.2026Q2]", "[F:a] and [F:b]"), up to the next figure."""
+    out, last = [], None
+    line_end = text.find("\n", start, stop)
+    stop = line_end if line_end != -1 else stop      # the next line's citations are its own
+    for c in _CITE_RAW.finditer(text, start, stop):
+        if c.start() - start < window or (last is not None and _RUN_GAP.fullmatch(text[last: c.start()])):
+            out.append(c.group(0))
+            last = c.end()
+        else:
+            break
+    return " ".join(out)
+
+
+_RUN_GAP = re.compile(r"[\s,;/+&→\-–−]*(?:and|or|vs\.?|to)?[\s,;/+&→\-–−]*")
+_CITES_BEFORE = re.compile(r"((?:\[F:[^\[\]]*\][\s,;/+&]*(?:and\s+)?)+)[\s(~≈*:=|—–-]{0,8}$")
+_AT_LEAST = re.compile(r"\b(?:over|more than|at least|above|north of|upwards of|in excess of)\s*~?$", re.I)
+
+
+@lru_cache(maxsize=2048)
+def _figures(text: str) -> tuple[Figure, ...]:
     out: list[Figure] = []
-    matches = list(_FIGURE.finditer(text or ""))
+    sentences = _Sentences(text)
+    matches = list(_FIGURE.finditer(text))
     for i, m in enumerate(matches):
         num = m.group("num") or m.group("num2")
         try:
             value = float(num.replace(",", ""))
         except (TypeError, ValueError):
             continue
+        scale = 1.0
         if m.group("cur"):
             kind = "usd"
-            value *= _SCALE.get((m.group("scale") or "").lower(), 1.0)
+            scale = _SCALE.get((m.group("scale") or "").lower(), 1.0)
+            value *= scale
         else:
             unit = m.group("unit").lower()
             kind = "pct" if unit in ("%", "pp") else "x"
+        core = m.start("cur") if m.group("cur") else m.start("num2")
         neg = m.group("neg")
-        # "42-49%": a dash right after a number joins a range; it is not a sign.
-        range_dash = bool(neg) and neg.strip() in ("-", "–", "−") and bool(re.search(r"\d\s?%?\s?$", text[:m.start()]))
-        if neg and neg.strip() in ("−", "-", "–", "(") and not range_dash:
-            value = -value
+        sign_at = m.start("neg") if neg else core
+        before = text[max(0, sign_at - 40): sign_at]
+        signed, low, joined = False, None, False
+        if neg in ("-", "–", "−"):
+            # "42-49%", "$80M-$90M", "$83.8M - $31.0M": a dash after a figure
+            # joins a range or subtracts; it is not a sign.
+            joined, low = _left_figure(_LEFT_OF_DASH.search(before), before, kind, scale)
+            if not joined:
+                value, signed = -value, True
+        elif neg == "+":
+            signed = m.end("neg") == core      # "+$86.1M", not "$83.8M + $5M"
+        elif neg == "(":
+            # Accounting brackets are a negative only in a table ("| ($86.1M) |");
+            # in prose "($83.8M)" is an aside.
+            line_start = text.rfind("\n", 0, m.start()) + 1
+            line_end = text.find("\n", m.end())
+            line = text[line_start: line_end if line_end != -1 else len(text)]
+            if "|" in line and text[m.end(): m.end() + 1] == ")":
+                value, signed = -value, True
+        else:
+            joined, low = _left_figure(_LEFT_OF_AND.search(before), before, kind, scale)
+        if low is not None and not low <= abs(value):
+            low = None                         # "$83.8M - $31.0M": a subtraction, not a range
+        if low is not None and out and 0 <= sign_at - out[-1].end <= 6:
+            out[-1].in_range = True
         nxt = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        tail = text[m.end(): min(nxt, m.end() + 80)]
-        keys = _CITE.findall(tail)
+        keys = _CITE.findall(_cite_run(text, m.end(), nxt))
         decimals = len(num.split(".")[1]) if "." in num else 0
         step = 10 ** -decimals
         if kind == "usd":
-            step *= _SCALE.get((m.group("scale") or "").lower(), 1.0)
-        low = None
-        before = text[max(0, m.start() - 16): m.end() - len(m.group(0).lstrip("−-–( "))] if range_dash \
-            else text[max(0, m.start() - 16): m.start()]
-        rng = re.search(r"\$?(\d[\d,]*(?:\.\d+)?)\s?(?:%|[kmbt])?\s?(?:[-–—]|to)\s?$", before, re.I)
-        if rng:
-            try:
-                low = float(rng.group(1).replace(",", "")) * (
-                    _SCALE.get((m.group("scale") or "").lower(), 1.0) if kind == "usd" else 1.0)
-            except ValueError:
-                low = None
+            step *= scale
+        left, right = sentences.bounds(m.start(), m.end())
+        lead = text[max(left + 1, sign_at - 40): sign_at]
+        lead = re.split(r"[;:,(\]]", lead)[-1]
         out.append(Figure(value=value, kind=kind, raw=m.group(0).strip(), start=m.start(), end=m.end(),
-                          keys=keys, sentence=_sentence_at(text, m.start(), m.end()), step=step,
-                          range_low=low, at_least=text[m.end(): m.end() + 1] == "+"))
-    return out
+                          keys=keys, sentence=text[left + 1: right + 1].strip(), step=step,
+                          range_low=low, signed=signed,
+                          at_least=text[m.end(): m.end() + 1] == "+" or bool(_AT_LEAST.search(text[max(0, sign_at - 20): sign_at])),
+                          lead=lead, sent_start=left + 1, scale=scale))
+    return tuple(out)
+
+
+def figures(text: str) -> list[Figure]:
+    """Money, percentages and multiples in ``text``, each with the [F:…] keys
+    cited right after it (before the next figure)."""
+    return list(_figures(text or ""))
 
 
 def _fact_as(f: dict, kind: str) -> float | None:
     """A fact's value in a figure's terms (usd, pct, x), or None if the units differ."""
     v = f.get("value")
     unit = f.get("unit")
-    if not isinstance(v, (int, float)):
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
         return None
     if kind == "usd" and unit in ("usd", "usd_per_share"):
         return float(v)
@@ -237,16 +360,64 @@ def _matches_value(fig: Figure, target: float) -> bool:
     return False
 
 
+# Line items that are signed by nature (a profit or a loss, an inflow or an
+# outflow); costs such as capex are stored positive and often written "−$7.8M".
+_SIGNED_CONCEPT = re.compile(r"income|ocf|fcf|eps|margin|non_operating|cash_flow|earnings|ebit|_yoy|gap|macd|"
+                             r"from_high|from_low|change|return", re.I)
+_SAYS_POSITIVE = re.compile(r"\b(?:profit(?:able)?|positive|inflows?|gains?|surplus|generat(?:ed|ing|es))\b", re.I)
+_SAYS_NEGATIVE = re.compile(r"\b(?:loss(?:es)?|negative|outflows?|deficit)\b", re.I)
+# The polarity word must govern the figure: "a profit of $88.4M", "turned
+# positive at +$86.1M", not "deep losses and 2.6% share growth".
+_GOVERNS = r"(?:\s+(?:of|at|to|was|were|is|reached|totall?ing|about|approximately|roughly|nearly|around|some|a|an|the|net|"
+_GOVERNS += r"quarterly|annual|operating|free|cash|flow|income))*\s*[:~≈]?\s*$"
+_SAYS_POSITIVE_AT = re.compile(_SAYS_POSITIVE.pattern + _GOVERNS, re.I)
+_SAYS_NEGATIVE_AT = re.compile(_SAYS_NEGATIVE.pattern + _GOVERNS, re.I)
+_SAYS_NOT = re.compile(r"\b(?:not|no|never|yet|until|before|instead|from|versus|vs\.?|rather)\b", re.I)
+
+
+def _sign_conflict(fig: Figure, f: dict, target: float) -> bool:
+    """The figure's written sign, or a polarity word just before it ("a
+    profit of $88.4M"), contradicts the fact's sign. An unsigned figure is
+    not a conflict: losses are usually written "a loss of $88.4M"."""
+    if not target or not fig.value:
+        return False
+    fact_negative = target < 0
+    signed_concept = bool(_SIGNED_CONCEPT.search(f.get("key") or ""))
+    if fig.signed and fig.value > 0 and fact_negative:
+        return True
+    if fig.signed and fig.value < 0 and not fact_negative and signed_concept:
+        return True
+    if fig.signed or _SAYS_NOT.search(fig.lead):
+        return False
+    # Only line items signed by nature: a warrant "gain of $15.2M" is filed as −15.25M.
+    if fact_negative and signed_concept and _SAYS_POSITIVE_AT.search(fig.lead) and not _SAYS_NEGATIVE.search(fig.lead):
+        return True
+    return (not fact_negative and signed_concept and bool(_SAYS_NEGATIVE_AT.search(fig.lead))
+            and not _SAYS_POSITIVE.search(fig.lead))
+
+
 def _matches_fact(fig: Figure, f: dict) -> bool:
     target = _fact_as(f, fig.kind)
-    return target is not None and _matches_value(fig, target)
+    return target is not None and not _sign_conflict(fig, f, target) and _matches_value(fig, target)
 
 
-def _derivable(fig: Figure, values: list[float], multiples: list[float] = ()) -> bool:
-    """Whether ``fig`` is arithmetic on ``values``: a signed sum of two to four
-    of them, or a product or quotient of two. The stages are told to derive
-    figures from cited keys ("equity $1.57B less goodwill $661M less
-    intangibles $583M = $325M"); such a result is on no sheet by definition."""
+def _matches_fact_uncited(fig: Figure, f: dict) -> bool:
+    """An uncited money figure against one fact on the sheet. Small figures
+    must round to the fact as written: with some 200 money facts on a sheet,
+    the ±$0.1M floor let a third of invented figures match one."""
+    if not _matches_fact(fig, f):
+        return False
+    if fig.kind == "usd" and abs(fig.value) < 20e6 and fig.range_low is None and not fig.at_least:
+        return abs(abs(fig.value) - abs(_fact_as(f, "usd"))) <= fig.step / 2 + 1e-9
+    return True
+
+
+def _derivable(fig: Figure, values: list[float], multiples: list[float] = (), max_terms: int = 3) -> bool:
+    """Whether ``fig`` is arithmetic on ``values``: a signed sum of two to
+    ``max_terms`` of them, or a product or quotient of two. The stages are
+    told to derive figures from cited keys ("equity $1.57B less goodwill
+    $661M less intangibles $583M = $325M"); such a result is on no sheet by
+    definition."""
     from itertools import combinations, product
 
     # Callers put the figure's own sentence first; keep the nearest values.
@@ -255,38 +426,66 @@ def _derivable(fig: Figure, values: list[float], multiples: list[float] = ()) ->
         if isinstance(v, (int, float)) and v and v not in seen:
             seen.append(v)
     vals = seen[:8]
-    for n in range(2, min(4, len(vals)) + 1):
+
+    def hit(x: float) -> bool:
+        return any(_close(a, b, fig.kind) or abs(a - b) <= fig.step / 2 + 1e-9
+                   for a, b in ((fig.value, x), (abs(fig.value), abs(x)))) or (
+            fig.range_low is not None and min(fig.range_low, abs(fig.value)) - fig.step / 2 <= abs(x)
+            <= max(fig.range_low, abs(fig.value)) + fig.step / 2)
+
+    for n in range(2, min(max_terms, len(vals)) + 1):
         for combo in combinations(vals, n):
             for signs in product((1, -1), repeat=n - 1):
-                if _matches_value(fig, combo[0] + sum(sg * v for sg, v in zip(signs, combo[1:], strict=True))):
+                if hit(combo[0] + sum(sg * v for sg, v in zip(signs, combo[1:], strict=True))):
                     return True
     for a, b in combinations(vals, 2):
         for x in (a * b, a / b, b / a):
-            if _matches_value(fig, x):
+            if hit(x):
                 return True
     # A multiple applied to a figure ("13x × $174.1M TTM revenue = $2,263M").
-    return any(_matches_value(fig, v * m) for v in vals for m in multiples if m)
+    return any(hit(v * m) for v in vals for m in multiples if m)
+
+
+def _previous_sentence(text: str, fig: Figure) -> str:
+    if fig.sent_start <= 1:
+        return ""
+    return _Sentences(text[max(0, fig.sent_start - 1500): fig.sent_start]).at(
+        min(1500, fig.sent_start) - 1, min(1500, fig.sent_start) - 1)
 
 
 def _context_values(text: str, fig: Figure, facts: Facts) -> list[float]:
     """Values ``fig`` may be derived from: its own sentence first, then the
-    text just before it (a result is often stated a sentence after its
+    sentence before it (a result is often stated a sentence after its
     inputs: "…$49.3B. That is a fall of $23.65B")."""
+    return (_sentence_values(fig.sentence, facts, fig.kind, fig)
+            + _sentence_values(_previous_sentence(text, fig), facts, fig.kind))
+
+
+def _wide_context_values(text: str, fig: Figure, facts: Facts) -> list[float]:
+    """For an uncited figure: its sentence, then the 300 characters before
+    it (a result two sentences after its inputs: "…is $27.32B. In 2025Q3 it
+    was … $50.97B. That is a fall of $23.65B")."""
     before = text[max(0, fig.start - 300): fig.start]
     nearest_first = [g.value for g in reversed(figures(before)) if g.kind == fig.kind]
     cited = [v for k in reversed(_CITE.findall(before)) if (v := _fact_as(facts.get(k) or {}, fig.kind)) is not None]
     return _sentence_values(fig.sentence, facts, fig.kind, fig) + nearest_first + cited
 
 
-# A bare multiplier beside a times sign ("4 × $96.22B", "16 × $384.88B"):
-# annualising a quarter, or applying a multiple written without its "x".
-_BARE_MULTIPLIER = re.compile(r"(?<![\w.$])(\d{1,3}(?:\.\d+)?)\s*[×*]|[×*]\s*(\d{1,3}(?:\.\d+)?)(?![\d.,]*\s*[%$BMKbmk])")
+# A sentence that says it is doing arithmetic. Only there may a cited figure
+# that does not match its key be a result derived from other figures.
+_ARITHMETIC = re.compile(r"=|≈|×|÷|\s[−\-–+*/]\s|\]\s*[+−\-–/]\s*\[|\b(?:less|plus|minus|combined|total(?:s|led|ing)?|"
+                         r"sum(?:s|med)?|per[\s-]share|of which|net of|times|divided by|multiplied by)\b", re.I)
 
 
 def _multiples(context: str) -> list[float]:
     out = [g.value for g in figures(context) if g.kind == "x"]
     out += [float(a or b) for a, b in _BARE_MULTIPLIER.findall(context)]
     return out
+
+
+# A bare multiplier beside a times sign ("4 × $96.22B", "16 × $384.88B"):
+# annualising a quarter, or applying a multiple written without its "x".
+_BARE_MULTIPLIER = re.compile(r"(?<![\w.$])(\d{1,3}(?:\.\d+)?)\s*[×*]|[×*]\s*(\d{1,3}(?:\.\d+)?)(?![\d.,]*\s*[%$BMKbmk])")
 
 
 def _sentence_values(sentence: str, facts: Facts, kind: str, exclude: Figure | None = None) -> list[float]:
@@ -304,11 +503,166 @@ def _sentence_values(sentence: str, facts: Facts, kind: str, exclude: Figure | N
     return out
 
 
+def _own_values(fig: Figure, keys: list[str], facts: Facts) -> list[float]:
+    out = []
+    for k in keys:
+        f = facts.get(k) or {}
+        v = _fact_as(f, fig.kind)
+        if v is None and fig.kind == "usd" and f.get("unit") == "shares" and isinstance(f.get("value"), (int, float)):
+            v = float(f["value"])
+        if v is not None:
+            out.append(v)
+    return out
+
+
+def _bare_results(sentence: str) -> list[float]:
+    """The value of each expression written out with bare numbers."""
+    out = []
+    for e in _BARE_EXPR.finditer(sentence):
+        tokens = re.findall(r"\d[\d,]*(?:\.\d+)?|[+−\-–×÷*/]", e.group(0))
+        nums = [float(t.replace(",", "")) for t in tokens[::2]]
+        ops = [{"−": "-", "–": "-", "×": "*", "÷": "/"}.get(t, t) for t in tokens[1::2]]
+        terms, signs = [nums[0]], [1]          # products and quotients first, then the sum
+        for op, n in zip(ops, nums[1:], strict=False):
+            if op in "*/":
+                if op == "/" and not n:
+                    break
+                terms[-1] = terms[-1] * n if op == "*" else terms[-1] / n
+            else:
+                terms.append(n)
+                signs.append(1 if op == "+" else -1)
+        else:
+            out.append(sum(sg * t for sg, t in zip(signs, terms, strict=True)))
+    return out
+
+
+def _bare_operands(sentence: str, fig: Figure) -> list[float]:
+    """Numbers written without units in an expression ("$71.61B (136.16 −
+    64.55)", "(2.85+1.04)"), read in the figure's scale."""
+    if fig.kind != "usd":
+        return []
+    return [float(n.replace(",", "")) * fig.scale for e in _BARE_EXPR.finditer(sentence)
+            for n in re.findall(r"\d[\d,]*(?:\.\d+)?", e.group(0))]
+
+
+# "3-5 sessions" and "2025-2026" are ranges; a spaced or true minus is arithmetic.
+_BARE_EXPR = re.compile(r"(?<![\w.$])\d[\d,]*(?:\.\d+)?(?:(?:\s?[+−×÷*/]\s?|\s[-–]\s)\d[\d,]*(?:\.\d+)?)+(?![\w.%])")
+
+
+_CHANGE = re.compile(r"\b(?:rose|rise[sn]?|fell|fall(?:s|en)?|increas\w*|decreas\w*|declin\w*|grew|grow\w*|drop\w*|"
+                     r"jump\w*|chang\w*|swung|swing|added|adds?|lost|shrank|eased|climb\w*|up|down|gain\w*|"
+                     r"widen\w*|narrow\w*)\b", re.I)
+
+
+def _period_changes(key: str, facts: Facts, kind: str) -> list[float]:
+    """The quarter-on-quarter changes of a cited line around the cited quarter."""
+    concept, _, period = key.partition(".")
+    m = re.fullmatch(r"(\d{4})Q([1-4])", period)
+    if not m:
+        return []
+    y, q = int(m.group(1)), int(m.group(2))
+    prev = f"{y - 1}Q4" if q == 1 else f"{y}Q{q - 1}"
+    nxt = f"{y + 1}Q1" if q == 4 else f"{y}Q{q + 1}"
+    here = _fact_as(facts.get(key) or {}, kind)
+    out = []
+    for other in (prev, nxt):
+        v = _fact_as(facts.get(f"{concept}.{other}") or {}, kind)
+        if here is not None and v is not None:
+            out.append(here - v)
+    return out
+
+
+def _matches_change(fig: Figure, keys: list[str], facts: Facts) -> bool:
+    """A change in one cited line, or in a sum or difference of up to three
+    of them ("cash + short-term investments declined $89.4M [F:cash.2026Q2],
+    [F:sti.2026Q2]", "net cash fell $19B [F:debt.2026Q2] [F:cash_sti.2026Q2]")."""
+    from itertools import combinations, product
+
+    changes = [c for c in (_period_changes(k, facts, fig.kind) for k in keys[:3]) if c]
+    for n in range(1, len(changes) + 1):
+        for lines in combinations(changes, n):
+            for picks in product(*lines):
+                for signs in product((1, -1), repeat=n):
+                    if _matches_value(fig, sum(sg * d for sg, d in zip(signs, picks, strict=True))):
+                        return True
+    return False
+
+
+def _related_values(keys: list[str], facts: Facts, kind: str) -> list[float]:
+    """Facts of the same period as a cited key whose line extends a cited line
+    (debt → debt_current), for a net figure the text derives."""
+    out = []
+    for k in keys:
+        concept, _, period = k.partition(".")
+        for other, f in facts.by_key.items():
+            c2, _, p2 = other.partition(".")
+            if p2 == period and c2 != concept and c2.startswith(concept + "_") and other not in keys:
+                v = _fact_as(f, kind)
+                if v is not None:
+                    out.append(v)
+    return out
+
+
+def _cited_derivation(text: str, fig: Figure, known: list[str], facts: Facts) -> bool:
+    """Whether a cited figure that matches none of its keys is arithmetic the
+    text shows: on its own keys ("fell $1.43B [F:cash_sti.2026Q1][F:cash_sti.2026Q2]",
+    "$741.5M ([F:a]+[F:b])", "3x ATR14 ($10.53) [F:atr14.usd]", "13.9M sh at
+    [F:price.close]"), or, where its sentence says it is computing ("=",
+    "less", "÷", "combined"...), on the figures of that sentence and the one
+    before, never the value of a single key it cites (eval review 2026-10-09:
+    "R&D of $51.9M [F:rnd.2026Q2]; S&M $20.9M" passed as R&D + S&M)."""
+    own = _own_values(fig, known, facts)
+    multiples = _multiples(fig.sentence)
+    shares = [float(n.replace(",", "")) * _SCALE[u.lower()]
+              for n, u in re.findall(r"(\d[\d,]*(?:\.\d+)?)\s?(M|B|million|billion)\s+(?:[\w-]+\s+)?sh(?:ares)?\b",
+                                     fig.sentence, re.I)]
+    if fig.kind == "usd":      # share counts cited in the sentence ("570.6M shares [F:shares.cover] at $7.42")
+        shares += [float(f["value"]) for k in _CITE.findall(fig.sentence)
+                   if (f := facts.get(k)) and f.get("unit") == "shares" and isinstance(f.get("value"), (int, float))]
+    if (own and _derivable(fig, own + shares, multiples, max_terms=max(2, len(own)))
+            and (len(own) >= 2 or shares or any(_matches_value(fig, o * m) for o in own for m in multiples if m))):
+        return True
+    # The mean of its keys ("$449.30 [F:boll.upper] [F:boll.lower]", "midpoint of ...").
+    if len(own) >= 2 and _matches_value(fig, sum(own) / len(own)):
+        return True
+    # A change in the cited line ("Cash fell by $11.17B in 2026Q2 [F:cash.2026Q2]",
+    # "Equity rose $28.02B over the quarter [F:equity.2026Q1]").
+    # The change word governs the figure: "fell by $11.17B", "a $36.13B jump".
+    if (fig.kind in ("usd", "pct") and _CHANGE.search(f"{fig.lead} {text[fig.end: fig.end + 30]}")
+            and _matches_change(fig, known, facts)):
+        return True
+    # Net of a related line the text leaves uncited ("Net cash (derived) $27.32B
+    # [F:cash_sti.2026Q2], [F:debt.2026Q2]" also takes debt_current.2026Q2).
+    if len(own) >= 2 and re.search(r"\b(?:net|derived)\b", fig.sentence, re.I):
+        extra = _related_values(known, facts, fig.kind)
+        if any(_derivable(fig, own + [x], max_terms=len(own) + 1) for x in extra):
+            return True
+    if not (_ARITHMETIC.search(fig.sentence) or _BARE_EXPR.search(fig.sentence)):
+        return False
+    # The expression written out in full ("−$171.8M (11.1 + 14.3 + 52.6 + 93.8)").
+    if fig.kind == "usd" and any(_matches_value(fig, v * fig.scale) for v in _bare_results(fig.sentence)):
+        return True
+    prev = _previous_sentence(text, fig)
+    operands = _context_values(text, fig, facts)
+    if len(own) == 1:
+        operands = [v for v in operands if not _close(abs(v), abs(own[0]), fig.kind)]
+    # Numbers the text writes out in an expression stand ("$34.37B (33.37 + 1.00
+    # [F:debt_current.2026Q2])"), its own key's value included.
+    operands = _bare_operands(fig.sentence, fig) + operands
+    multiples = _multiples(f"{prev} {fig.sentence}")
+    return _derivable(fig, operands, multiples) or any(
+        _matches_value(fig, v / m) for v in operands for m in multiples if m)
+
+
 # A figure the text itself marks as not from the filings (R7: the RM lists
-# news figures as unverified) is a disclosure, not a claim.
-_LABELLED_UNVERIFIED = re.compile(r"\b(unverified|not on the fact sheet|not (?:a )?fact[- ]sheet (?:keys?|figures?|items?)|"
-                                  r"headline[- ]only|news[- ](?:reported|only)|not verified|cannot be verified|"
-                                  r"per (?:the )?news|reported by|dropped|disregard(?:ed)?|excluded from)\b", re.I)
+# news figures as unverified) is a disclosure, not a claim. Only disclosure
+# phrases: "Cash dropped to $212M" and "reported by the company" are claims.
+_LABELLED_UNVERIFIED = re.compile(
+    r"\b(unverified|not on the fact[- ]sheet|not (?:a )?fact[- ]sheet (?:keys?|figures?|items?)|"
+    r"not (?:on the|a) fact[- ]sheet|headline[- ]only|news[- ](?:reported|only)|not verified|cannot be verified|"
+    r"per (?:the )?news|as reported by|(?:reported|cited) (?:in|by) (?:the )?(?:news|press|media)|"
+    r"(?:dropped|excluded|removed) from (?:the|this|our) (?:thesis|analysis|case|sizing|valuation|call)|"
+    r"disregard(?:ed)? (?:it|this|that|them|the (?:figure|claim|report)))\b", re.I)
 
 
 # Only where the text says it is adding periods up.
@@ -349,26 +703,49 @@ def check_numbers(text: str, facts: Facts, stage: str, field_name: str) -> list[
         if not fig.keys:
             continue
         known = [k for k in fig.keys if facts.get(k)]
+        pre = _CITES_BEFORE.search(text[max(0, fig.start - 200): fig.start])
+        pre_keys = [k for k in _CITE.findall(pre.group(1)) if facts.get(k)] if pre else []
         for k in fig.keys:
             if not facts.get(k):
                 flags.append(LintFlag(_severity(field_name, "unknown_key"), "unknown_key", stage, field_name,
                                       fig.sentence[:300], f"no fact {k} on the sheet", [k]))
-        if known and not any(_matches_fact(fig, facts.get(k)) for k in known):
+        # "[F:boll.upper] $238.43 and [F:boll.lower] $209.95": the citation
+        # comes first, and the one after the figure is the next figure's.
+        if pre_keys and (any(_matches_fact(fig, facts.get(k)) for k in pre_keys)
+                         or (len(pre_keys) >= 2 and _derivable(fig, _own_values(fig, pre_keys, facts),
+                                                                max_terms=len(pre_keys)))):
+            continue
+        if known and fig.value and not any(_matches_fact(fig, facts.get(k)) for k in known):
             # Keys of another unit (a % cited after a $ figure) don't contradict it.
             comparable = [k for k in known if _fact_as(facts.get(k), fig.kind) is not None]
-            # Arithmetic on the cited keys ("$741.5M ([F:a]+[F:b])", "fell $1.43B
-            # [F:cash_sti.2026Q1][F:cash_sti.2026Q2]", "$7.41 (market cap ÷ shares)").
-            if _derivable(fig, _context_values(text, fig, facts),
-                          _multiples(text[max(0, fig.start - 300): fig.end + 60])):
+            # Arithmetic on the cited keys, or shown in the sentence.
+            if _cited_derivation(text, fig, known, facts):
                 continue
             # A citation placed at the end of a sentence may belong to another
-            # figure in it ("$83.8M in Q2, with $221M in orders [F:revenue.2026Q2]").
+            # figure in it ("$83.8M in Q2, with $221M in orders [F:revenue.2026Q2]"),
+            # but only to one that carries no citation of its own: "fell to $13.5M
+            # [F:rnd.2026Q2] from $31.0M [F:rnd.2026Q1]" swaps the quarters.
             siblings = [g for g in sentence_figs.get(fig.sentence, []) if g is not fig]
             comparable = [k for k in comparable
-                          if not any(_matches_fact(g, facts.get(k)) for g in siblings)]
+                          if not any(_matches_fact(g, facts.get(k)) and (not g.keys or _cited_before(text, g, k))
+                                     for g in siblings)]
+            # A citation for the total of this figure and an uncited sibling ("cash
+            # was $657.9M and short-term investments $726.6M [F:cash_sti.2026Q2]").
+            comparable = [k for k in comparable
+                          if not any(not g.keys and g.kind == fig.kind
+                                     and any(_close(fig.value + sg * g.value, _fact_as(facts.get(k), fig.kind), fig.kind)
+                                             for sg in (1, -1))
+                                     for g in siblings)]
+            # Keys that together derive a sibling with no citation of its own
+            # ("~$1.75B across 2025Q3–2026Q1 … [F:a.2025Q3][F:a.2025Q4][F:a.2026Q1]").
+            own = _own_values(fig, comparable, facts)
+            if len(own) >= 2 and any(not g.keys and g.kind == fig.kind and _derivable(g, own, max_terms=len(own))
+                                     for g in siblings):
+                comparable = []
             # An ATR key cited for a distance in ATRs ("0.17 ATR below the $7.19
             # close, per [F:atr14.usd]") measures the distance, not this figure.
-            if re.search(r"\d(?:\.\d+)?\s*(?:x\s*)?ATRs?\b", fig.sentence):
+            if re.search(r"(?:\d(?:\.\d+)?|\b(?:one|two|three|half|an?))[\s-]*(?:x\s*|times\s+)?ATR(?:s|14)?\b",
+                         fig.sentence, re.I):
                 comparable = [k for k in comparable if not k.startswith("atr14")]
             # A key cited for a bare number in the sentence ("(7.19 − 7.12) / 0.4076
             # [F:atr14.usd]") belongs to that number, not to this figure.
@@ -377,10 +754,16 @@ def check_numbers(text: str, facts: Facts, stage: str, field_name: str) -> list[
                           if not any(abs(b - float(facts.value(k))) <= max(abs(float(facts.value(k))) * 0.005, 0.0005)
                                      for b in bare if isinstance(facts.value(k), (int, float)))]
             if comparable:
-                expected = "; ".join(f"{k} = {facts.value(k)}" for k in comparable)
+                expected = f"{fig.raw.lstrip('(')} is written; " + "; ".join(f"{k} = {facts.value(k)}" for k in comparable)
                 flags.append(LintFlag(_severity(field_name, "cited_mismatch"), "cited_mismatch", stage,
                                       field_name, fig.sentence[:300], expected, comparable))
     return flags
+
+
+def _cited_before(text: str, fig: Figure, key: str) -> bool:
+    """Whether ``key`` is cited just before ``fig`` ("[F:boll.upper] $238.43")."""
+    pre = _CITES_BEFORE.search(text[max(0, fig.start - 200): fig.start])
+    return bool(pre) and key in _CITE.findall(pre.group(1))
 
 
 def unsupported_figures(text: str, facts: Facts, stage: str, field_name: str) -> list[LintFlag]:
@@ -399,26 +782,28 @@ def unsupported_figures(text: str, facts: Facts, stage: str, field_name: str) ->
         if fig.keys:
             established.append(fig.value)
             continue
-        if abs(fig.value) < 1e6:
+        if abs(fig.value) < 1e6 or fig.in_range:
             continue
-        if (any(_matches_fact(fig, f) for f in numeric)
+        if fig.at_least and not fig.raw.endswith("+"):
+            fig = replace(fig, at_least=False)  # "over $500M" is a claim, not every larger figure
+        if (any(_matches_fact_uncited(fig, f) for f in numeric)
                 or any(_matches_value(fig, v) for v in established)
-                or _derivable(fig, _context_values(text, fig, facts),
-                              _multiples(text[max(0, fig.start - 300): fig.end + 60]))
+                or _derivable(fig, _wide_context_values(text, fig, facts),
+                              _multiples(text[max(0, fig.start - 300): fig.end + 60]), max_terms=4)
                 or (_SUMS_PERIODS.search(fig.sentence) and _period_sum(fig, facts))):
             established.append(fig.value)
             continue
         if _LABELLED_UNVERIFIED.search(fig.sentence):
             continue
         flags.append(LintFlag(_severity(field_name, "unsupported"), "unsupported", stage, field_name,
-                              fig.sentence[:300], "not on the fact sheet and not cited"))
+                              fig.sentence[:300], f"{fig.raw.lstrip('(')} is not on the fact sheet and not cited"))
     return flags
 
 
 _FROM_TO = re.compile(
     r"from\s+(?P<a>[^,;]{0,40}?\$?[−\-–]?\$?\d[\d,.]*\s?(?:%|x|[kmbt]|million|billion)?)"
     r"(?P<akeys>(?:\s*\[F:[^\]]+\])*)"
-    r"[^;]{0,60}?\bto\s+(?P<b>\$?[−\-–]?\$?\d[\d,.]*\s?(?:%|x|[kmbt]|million|billion)?)"
+    r"(?:(?!\.\s)[^;—]){0,60}?\bto\s+(?P<b>\$?[−\-–]?\$?\d[\d,.]*\s?(?:%|x|[kmbt]|million|billion)?)"
     r"(?P<bkeys>(?:\s*\[F:[^\]]+\])*)"
     r"(?P<pct>\s*\(\s*[+−\-–]?\d[\d,.]*\s?%\s*\))?",
     re.IGNORECASE,
@@ -498,10 +883,13 @@ _HEDGES = re.compile(r"\b(wrong|incorrect|false|misread|not supported|refuted?|o
                      r"reassess|confirmed|once|needs? to|must|"
                      r"if|would|could|should|unless|risk of|watch for|a break|breaks?|fall|falls|falling|"
                      r"drop|drops|reclaim|reclaims|until|when|previous|prior|earlier|before|not|nor|neither|"
-                     r"approaching|threshold|potential|stop|stop-loss|target|entry|level)\b|[<>]", re.I)
-# Whose position "above/below the 50-day" describes: the price, not a stop or a target.
-_PRICE_SUBJECT = re.compile(r"\b(price|stock|shares|it|trades?|trading|closed?|closes|sits?|is|remains?)\b"
-                            r"[^.$\d]{0,30}$", re.I)
+                     r"approaching|threshold|potential|stop|stop-loss|target|entry|level|next|cancels?|"
+                     r"invalidates?|triggers?)\b|\ba\s+(?:daily\s+|weekly\s+|sustained\s+|confirmed\s+)?close\b|[<>]", re.I)
+# Whose position "above/below the 50-day" describes: the price, not a stop,
+# a target or another average ("the 50-day SMA remains above the 200-day").
+_PRICE_SUBJECT = re.compile(r"(?:\b(?:price|stock|shares|it|trades?|trading|closed?|closes|closing)\b|"
+                            r"\b(?!SMA\b|EMA\b|DMA\b|MACD\b|RSI\b|ATR\b)[A-Z]{2,5}\b)[^.$\d]{0,30}$")
+_OTHER_AVERAGE = re.compile(r"\b(?:\d{1,3}[-\s]?(?:day|d|DMA|week|wk)\b|SMA|EMA|DMA|moving\s+average|MA\b)", re.I)
 
 
 def check_directions(text: str, facts: Facts, stage: str, field_name: str) -> list[LintFlag]:
@@ -526,7 +914,10 @@ def check_directions(text: str, facts: Facts, stage: str, field_name: str) -> li
         if not isinstance(gap, (int, float)):
             continue
         sentence = _sentence_at(text, m.start(), m.end())
-        if _HEDGES.search(sentence) or not _PRICE_SUBJECT.search(text[max(0, m.start() - 40): m.start()]):
+        lead = text[max(0, m.start() - 40): m.start()]
+        lead = lead[lead.rfind(". ") + 1:] if ". " in lead else lead
+        subject = _PRICE_SUBJECT.search(lead) or _PRICE_SUBJECT.search(lead.lower())
+        if _HEDGES.search(sentence) or not subject or _OTHER_AVERAGE.search(lead[subject.start():]):
             continue
         claims_above = m.group("side").lower() == "above"
         if claims_above != (gap > 0) and abs(gap) > 0.3:
@@ -577,7 +968,7 @@ def check_provenance(text: str, sources: dict[str, str], stage: str, field_name:
 
 _POLICY = [
     (re.compile(r"\bshort\s+(?:interest|float|squeeze\s+fuel)\b|\bdays[\s-]to[\s-]cover\b|"
-                r"\d[\d.]*\s?%\s+(?:of\s+(?:the\s+)?float\s+)?(?:short(?:ed)?|sold\s+short)\b|"
+                r"\d[\d.]*\s?%\s+(?:of\s+(?:the\s+)?float\s+)?(?:short(?:ed)?(?!\s+of\b)|sold\s+short)\b|"
                 r"\bshorted\b", re.I), "short interest"),
     (re.compile(r"\bconsensus\s+(?:EPS|estimate|estimates|revenue|forecast)\b", re.I), "consensus estimates"),
     (re.compile(r"\b(?:analyst|street|consensus|average)\s+(?:price\s+)?targets?\b(?:\s+(?:of|at)\s+\$)?", re.I),
@@ -627,9 +1018,22 @@ def check_style(text: str, stage: str, field_name: str) -> list[LintFlag]:
 # which a reader takes for the platform's Verified badge). The stages'
 # adjudication labels are for the record; the digest states the substance.
 # Bare "review" is ordinary prose and is not flagged.
-_PROCESS = re.compile(r"\b(?:un)?verified\b|\berrat(?:a|um)\b|\blint\b|\bfact[\s-]sheets?\b|"
+_PROCESS = re.compile(r"\bunverified\b|\berrat(?:a|um)\b|\blint\b|\bfact[\s-]sheets?\b|"
                       r"\bprevious\s+draft\b", re.I)
-_ERRATUM_ID = re.compile(r"\bE\d{1,2}\b")  # "per errata E5"; case-sensitive
+# "Verified" as the review's label ("**Verified**", "quality verified",
+# "verified quality", "(verified)", "Verified (derived)"), not "FDA-verified"
+# or "independently verified".
+_VERIFIED_LABEL = re.compile(r"\((?:verified|unverified)\)|"
+                             r"\b(?:quality|figures?|numbers?|data|facts?|claims?|sheet)[\s-]verified\b|"
+                             r"(?<![-\w])verified,?\s+(?:[\w-]+\s+)?(?:evidence|points?|arithmetic|math|figures?|numbers?|"
+                             r"data|facts?|claims?|filings?|fundamentals|growth|earnings|quality|cash|FCF|revenue|"
+                             r"losses|record|results?|metrics?)\b|\b(?:real|correct|confirmed) and verified\b|"
+                             r"(?<![-\w])verified\s*(?:\(|:)", re.I)
+_VERIFIED_LABEL_CASED = re.compile(r"(?<![-\w])Verified\b")  # the capitalised label
+# An erratum id ("per errata E5", "see E2", "(E5)", "fixed in E12"), not
+# "E2 jets" or "Series E3"; case-sensitive.
+_ERRATUM_ID = re.compile(r"(?:\b[Ee]rrat(?:a|um)\s+|\b(?:per|see)\s+|\b(?:fixed|corrected|addressed|resolved|closed)\s+"
+                         r"(?:in|by|per)\s+|\()E\d{1,2}\b")
 
 
 def check_process_language(text: str, stage: str, field_name: str) -> list[LintFlag]:
@@ -640,7 +1044,7 @@ def check_process_language(text: str, stage: str, field_name: str) -> list[LintF
         return []
     flags: list[LintFlag] = []
     seen: set[str] = set()
-    for rx in (_PROCESS, _ERRATUM_ID):
+    for rx in (_PROCESS, _VERIFIED_LABEL, _VERIFIED_LABEL_CASED, _ERRATUM_ID):
         for m in rx.finditer(text):
             sentence = _sentence_at(text, m.start(), m.end())
             if sentence in seen:
@@ -662,6 +1066,10 @@ def _digest_strings(value) -> list[str]:
     return []
 
 
+_BARE_RESULT = re.compile(r"\s*\$?\s?(\d[\d,]*(?:\.\d+)?)(?![\d.,])\s?(" + _SCALES + r")?\b(?!\s?(?:%|x\b|×))", re.I)
+_PER_SHARE = re.compile(r"\$\s?(\d[\d,]*(?:\.\d+)?)\s*(?:/\s*share|per\s+share|a\s+share)\b", re.I)
+
+
 def check_target(decision: dict | None, facts: Facts) -> list[LintFlag]:
     """Check 6 (part): the target sits on the rating's side of the price."""
     if not decision:
@@ -679,17 +1087,23 @@ def check_target(decision: dict | None, facts: Facts) -> list[LintFlag]:
     # R7: the target is derived — its math ends at it, and it sits between
     # the bear and bull cases.
     math = decision.get("target_math") or ""
+    math = math if isinstance(math, str) else " ".join(_digest_strings(math))
     # Every "= $x" result in the math; the target must be one of them. The
     # field often carries the bear and bull cases after the base case, so
     # the last result is not the target's (eval 2026-10-09: 4 of 6 GPT
     # reports flagged against their bull case).
     results = []
-    for part in math.split("=")[1:]:
+    for part in re.split(r"=|≈|→|~", math)[1:]:
         figs = figures(part[:80])
-        if figs and figs[0].kind == "usd":
+        bare = _BARE_RESULT.match(part)
+        if figs and figs[0].kind == "usd" and (not bare or figs[0].start <= bare.end()):
             results.append(figs[0].value)
+        elif bare:                              # "= 6.08 per share"
+            results.append(float(bare.group(1).replace(",", "")) * _SCALE.get((bare.group(2) or "").lower(), 1.0))
+    # A per-share result anywhere in the math also counts ("$2.09B ($6.08/share)").
+    per_share = [float(n.replace(",", "")) for n in _PER_SHARE.findall(math)]
     tolerance = max(0.02 * target, 0.01)
-    if results and not any(abs(r - target) <= tolerance for r in results):
+    if results and not any(abs(r - target) <= tolerance for r in results + per_share):
         shown = ", ".join(f"{r:,.2f}" for r in results[:4])
         flags.append(LintFlag("load_bearing", "target_math", "portfolio_manager", "pm.price_target",
                               math[:300], f"no result in the math is the target {target:,.2f} (results: {shown})"))
@@ -767,13 +1181,21 @@ def lint_state(state: dict) -> dict:
         # An analyst's own report is not checked against itself for provenance.
         own = {k: v for k, v in sources.items() if not stage.startswith(k)}
         flags.extend(lint_text(text, facts, stage, field_name, own))
-    # Process language in the digest fields the full lint does not cover
-    # (points, excerpts, risk lenses, sizing...).
+    # The digest fields stage_texts does not cover (points, excerpts, risk
+    # lenses, sizing...): each point or entry as one text, so a figure in a
+    # point's title and its citation in the detail are read together. Their
+    # figure findings are minor: the points restate derived figures without
+    # citations (eval 2026-10-09: 35 such findings in 79 reports, nearly all
+    # correct derivations), so they are leads for the editor, not holds.
     linted = {f for _, f, _ in stage_texts(state)}
     for key, value in (state.get("report_digest") or {}).items():
-        if f"digest.{key}" not in linted:
-            for text in _digest_strings(value):
-                flags.extend(check_process_language(text, "digest", f"digest.{key}"))
+        if f"digest.{key}" in linted:
+            continue
+        for item in (value if isinstance(value, list) else [value]):
+            text = "\n".join(s.strip() for s in _digest_strings(item) if s.strip())
+            flags.extend(f for f in lint_text(text, facts, "digest", f"digest.{key}", sources)
+                         if f.severity != "style")
+            flags.extend(unsupported_figures(text, facts, "digest", f"digest.{key}"))
     flags.extend(check_target(state.get("portfolio_decision"), facts))
     # Two figures in one sentence are one finding, not two.
     unique: dict[tuple, LintFlag] = {}

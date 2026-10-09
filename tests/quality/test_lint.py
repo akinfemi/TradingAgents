@@ -304,3 +304,193 @@ def test_chained_valuation_math_is_supported(sheet):
     flags = [f for f in lint_text(text, sheet, "portfolio_manager", "pm") if f.kind == "unsupported"]
     assert flags == [], [f.quote for f in flags]
     assert [f.kind for f in lint_text("Backlog of $912.0M supports the call.", sheet, "portfolio_manager", "pm")] == ["unsupported"]
+
+
+# ---- code review of the linter, 2026-10-09 (one test per finding) ---------------------------
+
+
+def lb_kinds(text, sheet, stage="research_manager", field="rm"):
+    return [f.kind for f in lint_text(text, sheet, stage, field) if f.blocking or f.severity == "load_bearing"]
+
+
+@pytest.mark.unit
+def test_1_to_is_not_a_range(sheet):
+    """'rose 67% to $95.0M', 'from $50.1M to $95.0M' and 'in 2025 to $40M' made
+    a range low out of whatever number came before 'to'."""
+    for text in ("Revenue rose 67% to $95.0M [F:revenue.2026Q2] in Q2.",
+                 "Revenue rose from $50.1M to $95.0M [F:revenue.2026Q2].",
+                 "Revenue climbed in 2025 to $40M [F:revenue.FY2025]."):
+        assert "cited_mismatch" in lb_kinds(text, sheet), text
+    assert figures("Revenue climbed in 2025 to $40M")[0].range_low is None
+    # Explicit ranges still read as ranges, the low end in its own unit.
+    assert figures("between $80M and $90M")[1].range_low == 80e6
+    assert figures("$500K–$2M")[1].range_low == 500e3
+    for text in ("Revenue rose 67% to $83.8M [F:revenue.2026Q2] in Q2.",
+                 "Revenue between $80M and $90M [F:revenue.2026Q2] in Q2."):
+        assert lb_kinds(text, sheet) == [], text
+
+
+@pytest.mark.unit
+def test_2_a_dash_between_money_figures_is_a_range_and_a_year_is_not_a_figure(sheet):
+    low, high = figures("Revenue of $80M-$90M")
+    assert (low.in_range, high.value, high.range_low, high.signed) == (True, 90e6, 80e6, False)
+    assert lb_kinds("Revenue of $80M-$90M [F:revenue.2026Q2] in Q2.", sheet) == []
+    # A year or quarter label before a minus sign is not the left end of a range.
+    assert [f.value for f in figures("Q2 2026 −$86.1M")] == [-86.1e6]
+    assert [f.value for f in figures("FY2025 −$38.7M")] == [-38.7e6]
+    # A subtraction is not a range, and its operand is not negative.
+    sub = figures("$83.8M - $31.0M = $52.8M")
+    assert sub[1].value == 31.0e6 and sub[1].range_low is None
+    # Still a range check: a cited value outside the written range is flagged.
+    assert "cited_mismatch" in lb_kinds("Revenue of $90M-$95M [F:revenue.2026Q2] in Q2.", sheet)
+
+
+@pytest.mark.unit
+def test_3_a_wrong_cited_figure_is_not_excused_as_a_sum_of_its_neighbours(sheet):
+    """'R&D of $51.9M' passed as R&D + S&M: no arithmetic is shown, and the
+    figure's own key is never one of its operands."""
+    assert "cited_mismatch" in lb_kinds("R&D of $51.9M [F:rnd.2026Q2] in Q2; S&M $20.9M [F:sm.2026Q2].", sheet)
+    q1, q2 = sheet.value("cash_sti.2026Q1"), sheet.value("cash_sti.2026Q2")
+    per_share = sheet.value("market_cap") / sheet.value("shares.cover")
+    atr = sheet.value("atr14.usd")
+    for text in (
+        # Arithmetic on the figure's own keys, as the stages are told to write it.
+        f"Cash plus short-term investments fell ${(q1 - q2) / 1e6:.1f}M [F:cash_sti.2026Q1][F:cash_sti.2026Q2].",
+        f"Market value is ${per_share:.2f} a share (market cap ÷ shares) [F:market_cap][F:shares.cover].",
+        "R&D and S&M combined were $51.9M [F:rnd.2026Q2][F:sm.2026Q2].",
+        f"A 2-ATR stop sits ${2 * atr:.2f} below the close [F:atr14.usd].",
+        # Arithmetic written out in the sentence.
+        "Opex excluding R&D was $168.1M ($199.1M [F:opex.2026Q2] less $31.0M [F:rnd.2026Q2]).",
+        # A change in the one line it cites, the change word governing the figure.
+        f"Cash plus short-term investments fell ${(q1 - q2) / 1e6:.1f}M in Q2 [F:cash_sti.2026Q2].",
+    ):
+        assert lb_kinds(text, sheet) == [], text
+    # Not a change: the same number stated as the level is wrong.
+    assert "cited_mismatch" in lb_kinds(
+        f"Cash plus short-term investments were ${(q1 - q2) / 1e6:.1f}M at quarter end [F:cash_sti.2026Q2].", sheet)
+
+
+@pytest.mark.unit
+def test_4_swapped_citations_are_caught(sheet):
+    text = "R&D fell to $13.5M [F:rnd.2026Q2] from $31.0M [F:rnd.2026Q1]."
+    assert lb_kinds(text, sheet).count("cited_mismatch") == 2
+    assert lb_kinds("R&D rose to $31.0M [F:rnd.2026Q2] from $13.5M [F:rnd.2026Q1].", sheet) == []
+    # A citation written before its figure belongs to that figure.
+    upper, lower = sheet.value("boll.upper"), sheet.value("boll.lower")
+    text = f"Bands: [F:boll.upper] ${upper:.2f} and [F:boll.lower] ${lower:.2f}, midpoint ${(upper + lower) / 2:.2f}."
+    assert lb_kinds(text, sheet, "portfolio_manager", "pm") == []
+
+
+@pytest.mark.unit
+def test_5_a_sign_that_contradicts_the_fact_is_flagged(sheet):
+    for text in ("Q2 net income was a profit of $88.4M [F:net_income.2026Q2].",
+                 "Operating cash flow turned positive at +$86.1M [F:ocf.2026Q2]."):
+        assert "cited_mismatch" in lb_kinds(text, sheet), text
+    for text in ("Q2 net loss was $88.4M [F:net_income.2026Q2].",
+                 "Q2 net income was −$88.4M [F:net_income.2026Q2].",
+                 "Operating cash flow was negative $86.1M [F:ocf.2026Q2].",
+                 # Stored negative, written as a gain: not a signed line item.
+                 "The warrant fair-value gain was $15.2M [F:warrant_fair_value.2026Q2].",
+                 # Costs are stored positive and often written as outflows.
+                 "Capex was −$7.8M [F:capex.2026Q2]."):
+        assert lb_kinds(text, sheet) == [], text
+
+
+@pytest.mark.unit
+def test_6_an_uncited_small_figure_must_round_to_a_fact(sheet):
+    """'$6.2M' sat within the ±$0.1M floor of revenue.2025Q2 ($6.273M)."""
+    assert lb_kinds("Backlog of $6.2M supports the call.", sheet) == ["unsupported"]
+    assert lb_kinds("Operating cash flow of +$86.1M supports the call.", sheet) == ["unsupported"]
+    for text in ("Revenue of $6.3M a year earlier supports the call.",
+                 "Capex of $7.8M supports the call.",
+                 "Operating cash flow of −$86.1M weighs on the call."):
+        assert lb_kinds(text, sheet) == [], text
+
+
+@pytest.mark.unit
+def test_7_only_disclosure_phrases_label_a_figure_unverified(sheet):
+    for text in ("Cash dropped to $212M by quarter end, funding just two quarters.",
+                 "Quarterly revenue reported by the company was $412M."):
+        assert lb_kinds(text, sheet) == ["unsupported"], text
+    for text in ("The $212M order was dropped from the thesis as news-only.",
+                 "A $56M order, as reported by MT Newswires, is not on the fact sheet.",
+                 "A $56M European contract reported in the news is a catalyst, not a figure we size on."):
+        assert lb_kinds(text, sheet) == [], text
+
+
+@pytest.mark.unit
+def test_8_target_math_without_a_dollar_result_is_read(sheet):
+    base = {"rating": "Underweight", "price_target": 6.08}
+    for math in ("$2.09B EV + $1.38B cash = $3.47B equity; / 570.6M shares = 6.08 per share",
+                 "12x × $174.1M = $2.09B; + $1.38B = $3.47B; ÷ 570.6M ≈ $6.08",
+                 "Equity value $3.47B / 570.6M shares → $6.08",
+                 "Base 12x × $174.1M = $2.09B ($6.08/share)"):
+        assert check_target({**base, "target_math": math}, sheet) == [], math
+    assert [f.kind for f in check_target({**base, "target_math": "… ÷ 570.6M ≈ $5.10"}, sheet)] == ["target_math"]
+    # Math with no stated result is not flagged for a per-share input.
+    no_result = {**base, "price_target": 306.0, "target_math": "TTM EPS is $24.48 per share; apply 12.5x."}
+    assert [f for f in check_target(no_result, sheet) if f.kind == "target_math"] == []
+
+
+@pytest.mark.unit
+def test_9_one_average_against_another_is_not_a_price_claim():
+    sheet = Facts({"facts": [{"key": "sma200.gap_pct", "value": -4.0, "unit": "pct"},
+                             {"key": "sma50.gap_pct", "value": -6.0, "unit": "pct"}]})
+    for text in ("The 50-day SMA remains above the 200-day SMA, so the long-term trend is intact.",
+                 "The 50-day moving average sits above the 200-day moving average.",
+                 "A daily close below the 50-day SMA cancels the add program."):
+        assert lb_kinds(text, sheet) == [], text
+    assert lb_kinds("The stock trades above its 200-day SMA.", sheet) == ["direction"]
+    assert lb_kinds("Price remains above the 50-day SMA.", sheet) == ["direction"]
+
+
+@pytest.mark.unit
+def test_10_short_of_a_high_and_ordinary_names_are_not_policy_or_process_language(sheet):
+    assert lb_kinds("The stock still trades 47% short of its 52-week high [F:52w.from_high_pct].", sheet) == []
+    assert "data_policy" in lb_kinds("With 42% of the float shorted, a squeeze is possible.", sheet)
+    for text in ("Buy: E2 jet deliveries are accelerating", "Hold: E7 Wedgetail award is the swing factor",
+                 "Buy: FDA-verified endpoints de-risk the launch", "Hold: Series E3 funding round closed",
+                 "Hold: the trial data were independently verified", "Hold: no catalyst can be verified this week"):
+        assert process_flags(text) == [], text
+    for text in ("Hold: margin restated (E5)", "Hold: see E2", "Buy: Verified (derived) cash covers capex",
+                 "Hold: bear won on verified arithmetic", "Buy: the (verified) backlog"):
+        assert process_flags(text), text
+
+
+@pytest.mark.unit
+def test_11_a_patch_the_relint_would_hold_is_not_applied_and_digest_points_are_linted(sheet):
+    from tradingagents.quality import editor
+    from tradingagents.quality.lint import LOAD_BEARING_FIELDS
+
+    digest = {"headline": "Hold: old", "bull_points": [{"title": "Cash", "detail": "Liquidity is ample."}]}
+    out, applied = editor.apply_patch(digest, [{"field": "headline", "action": "replace",
+                                                "value": "Hold: backlog of $412M covers two years of revenue"}], sheet)
+    assert out["headline"] == "" and applied == [{"field": "headline", "action": "delete"}]
+    out, _ = editor.apply_patch(digest, [{"field": "headline", "action": "replace",
+                                          "value": "Hold: revenue of $83.8M grew fast"}], sheet)
+    assert out["headline"] == "Hold: revenue of $83.8M grew fast"
+    # The points get the figure checks too (minor: they restate derived figures uncited).
+    state = {"fact_sheet": sheet.sheet,
+             "report_digest": {"headline": "Hold: fine",
+                               "bull_points": [{"title": "R&D", "detail": "R&D was $23.4M [F:rnd.2026Q2]."}]}}
+    flags = [f for f in lint_state(state)["flags"] if f["field"] == "digest.bull_points"]
+    assert [(f["kind"], f["severity"]) for f in flags] == [("cited_mismatch", "minor")]
+    assert "key_numbers" not in LOAD_BEARING_FIELDS
+
+
+@pytest.mark.unit
+def test_12_citation_forms_brackets_and_long_text(sheet):
+    import time
+
+    for text in ("R&D was $23.4M [F:rnd.2026Q2, F:rnd.2026Q1].", "R&D was $23.4M [F: rnd.2026Q2].",
+                 "R&D was $23.4M [F:rnd.2026Q2; F:sm.2026Q2]."):
+        assert "cited_mismatch" in lb_kinds(text, sheet), text
+    assert lb_kinds("R&D was $31.0M [F: rnd.2026Q2] and S&M $20.9M [F:sm.2026Q2 , F:rnd.2026Q1].", sheet) == []
+    # Parentheses are a negative only in a table.
+    assert figures("Revenue ($83.8M) beat")[0].value == 83.8e6
+    assert figures("| Q2 | ($86.1M) |")[0].value == -86.1e6
+    # A run-on text without sentence breaks is linted in linear time (was 9.1s at 40k chars).
+    text = "".join(f"G&A $128.0M [F:ga.2026Q2], S&M $20.9M, backlog ${100 + i}.{i % 10}M; " for i in range(750))
+    started = time.monotonic()
+    lint_text(text, sheet, "research_manager", "rm")
+    assert len(text) > 40_000 and time.monotonic() - started < 5

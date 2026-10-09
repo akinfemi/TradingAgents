@@ -287,7 +287,10 @@ def apply_patch(digest: dict, patch: list[dict], facts: Facts) -> tuple[dict, li
             continue
         action, value = p.get("action"), p.get("value") or ""
         if action == "replace":
-            bad = [f for f in lint_text(value, facts, "editor", f"digest.{m.group('field')}") if f.blocking]
+            # What the relint would count as open (load-bearing, blocking or
+            # not: an off-sheet figure in a key point) is not applied.
+            bad = [f for f in lint_text(value, facts, "editor", f"digest.{m.group('field')}")
+                   if f.blocking or f.severity == "load_bearing"]
             if bad:
                 action = "delete"
         field, index, sub = m.group("field"), m.group("index"), m.group("sub")
