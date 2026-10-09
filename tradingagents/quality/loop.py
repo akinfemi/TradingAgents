@@ -103,7 +103,8 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
         if attempt == max_revisions:
             status = "held"
             hold_reason = review.get("hold_reason") or (
-                f"load-bearing errors remained after {max_revisions} revision{'s' if max_revisions != 1 else ''}")
+                "Errors in figures the call relies on were still there after "
+                + ("the revision." if max_revisions == 1 else f"{max_revisions} revisions."))
             break
         new = errata.merge(
             all_errata,
