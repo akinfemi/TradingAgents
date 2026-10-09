@@ -326,6 +326,11 @@ class OpenAIClient(BaseLLMClient):
         for key in _PASSTHROUGH_KWARGS:
             if key not in self.kwargs:
                 continue
+            if key == "reasoning_effort" and self.provider == "openrouter":
+                # OpenRouter takes effort as {"reasoning": {"effort": …}} for
+                # every model family it serves.
+                llm_kwargs.setdefault("extra_body", {})["reasoning"] = {"effort": self.kwargs[key]}
+                continue
             if key == "reasoning_effort" and not _supports_reasoning_effort(self.model):
                 continue
             llm_kwargs[key] = self.kwargs[key]

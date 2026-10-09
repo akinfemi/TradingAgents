@@ -1,30 +1,37 @@
-"""Judge every report of an evaluation with Claude Opus 5.5 (REPORT_QUALITY_PLAN R1).
+"""Judge every report of an evaluation (REPORT_QUALITY_PLAN R1; grounded and
+routed through OpenRouter since 2026-10-09).
 
-    cd server && uv run python ../TradingAgents/eval/judge.py --label baseline --env ../.env.staging.host
+    python eval/judge.py --label <label> [--judge-model anthropic/claude-opus-5.5]
 
-Reads runs/<label>/<ticker>/run.json, writes each judgement next to it
-(judgement.json, skipped when present) and the evaluation summary to
-results/<date>-<label>.json.
+The judge reads the whole report with the run's fact sheet as ground truth,
+checks figures with two tools (`fact`, `calc`) and submits a structured
+judgement. Every judge, whatever its family, takes the same path, so two
+judges differ only in the model. Reads runs/<label>/<ticker>/run.json; writes
+judgement-<model>.json beside it (reused only when the prompt, the report and
+the model are unchanged) and the summary to results/<date>-<label>-<model>.json.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import EVAL_DIR, RESULTS_DIR, RUNS_DIR, load_env  # noqa: E402
+from common import EVAL_DIR, RESULTS_DIR, RUNS_DIR, golden_set, load_env  # noqa: E402
 
-JUDGE_MODEL = "claude-opus-5-5"
-# Opus 5.5 at $4/$20 per Mtok (server/app/prices.py).
-JUDGE_PRICE = (4.00, 20.00)
+DEFAULT_JUDGE = "anthropic/claude-opus-5.5"
+JUDGE_VERSION = 2  # 2: the ruling is in the prompt; grounded; OpenRouter
 CLASSES = ("arithmetic", "misread", "consistency", "context", "unsupported", "reasoning", "presentation")
+MAX_TOOL_ROUNDS = 40
+MAX_SCHEMA_RETRIES = 3
 
 
 class Finding(BaseModel):
@@ -34,21 +41,21 @@ class Finding(BaseModel):
     quote: str = Field(description="The exact text at fault.")
     problem: str
     correction: str = Field(description="The correct value or wording, or 'n/a' if it can't be stated.")
-
-
-class GroundedFinding(Finding):
-    checked: bool = Field(description="True when you confirmed this with the fact and calc tools; "
+    checked: bool = Field(description="True when a fact or calc result you received confirmed this; "
                                       "false for a judgment call or a figure you could not check.")
 
 
+_SCORE = "integer from 0 to 5"
+
+
 class Scores(BaseModel):
-    arithmetic: int = Field(ge=0, le=5)
-    misread: int = Field(ge=0, le=5)
-    consistency: int = Field(ge=0, le=5)
-    context: int = Field(ge=0, le=5)
-    unsupported: int = Field(ge=0, le=5)
-    reasoning: int = Field(ge=0, le=5)
-    presentation: int = Field(ge=0, le=5)
+    arithmetic: int = Field(ge=0, le=5, description=_SCORE)
+    misread: int = Field(ge=0, le=5, description=_SCORE)
+    consistency: int = Field(ge=0, le=5, description=_SCORE)
+    context: int = Field(ge=0, le=5, description=_SCORE)
+    unsupported: int = Field(ge=0, le=5, description=_SCORE)
+    reasoning: int = Field(ge=0, le=5, description=_SCORE)
+    presentation: int = Field(ge=0, le=5, description=_SCORE)
 
 
 class Judgement(BaseModel):
@@ -56,10 +63,6 @@ class Judgement(BaseModel):
     findings: list[Finding] = Field(description="Every error found, most serious first.")
     verdict: Literal["publish", "publish_with_fixes", "do_not_publish"]
     summary: str = Field(description="Two sentences on the report's quality.")
-
-
-class GroundedJudgement(Judgement):
-    findings: list[GroundedFinding] = Field(description="Every error found, most serious first.")
 
 
 GROUNDING = """
@@ -76,9 +79,9 @@ with the tools. A figure derived by arithmetic from fact-sheet values (shown
 or reproducible with `calc`) is supported, even if it isn't itself on the
 sheet. Figures from news or social posts aren't on the sheet; they are
 unsupported only when the report treats them as established fact. Mark each
-finding `checked` when the tools confirmed it; judgment calls (reasoning,
-levels, horizon) are `checked: false`. When done, call `submit_judgement`
-once with the full judgement.
+finding `checked` only when a tool result you have received confirmed it;
+judgment calls (reasoning, levels, horizon) are `checked: false`. When done,
+call `submit_judgement` once, on its own, with the full judgement.
 """
 
 _SECTIONS = (
@@ -88,7 +91,10 @@ _SECTIONS = (
     ("Fundamentals analyst report", lambda s: s.get("fundamentals_report")),
     ("Bull researcher", lambda s: (s.get("investment_debate_state") or {}).get("bull_history")),
     ("Bear researcher", lambda s: (s.get("investment_debate_state") or {}).get("bear_history")),
-    ("Research manager ruling", lambda s: s.get("investment_plan") or (s.get("investment_debate_state") or {}).get("judge_decision")),
+    # The ruling is investment_plan since upstream cf960d6; until 2026-10-09
+    # the judge read the old key and never saw it.
+    ("Research manager ruling",
+     lambda s: s.get("investment_plan") or (s.get("investment_debate_state") or {}).get("judge_decision")),
     ("Trader plan", lambda s: s.get("trader_investment_plan")),
     ("Risk review: aggressive", lambda s: (s.get("risk_debate_state") or {}).get("aggressive_history")),
     ("Risk review: neutral", lambda s: (s.get("risk_debate_state") or {}).get("neutral_history")),
@@ -97,16 +103,19 @@ _SECTIONS = (
 )
 
 
-def build_prompt(run: dict, grounded: bool = False) -> str:
+def build_prompt(run: dict) -> str:
     state = run["state"]
+    missing = [title for title, get in _SECTIONS if not get(state)]
+    if "Research manager ruling" in missing or "Portfolio decision" in missing:
+        raise ValueError(f"report is missing {missing}: refusing to judge an incomplete report")
     parts = [
         (EVAL_DIR / "rubric.md").read_text(encoding="utf-8"),
-        GROUNDING if grounded else "",
+        GROUNDING,
         f"\n# Report: {run['ticker']}, trade date {run['trade_date']}, rating {run['rating']}\n",
         "## Price facts computed in code (ground truth)\n",
         run.get("price_facts") or "(none available)",
-        *(["\n## Fact sheet (computed in code from filings and prices; ground truth)\n",
-           state.get("fact_sheet_text") or "(none)"] if grounded else []),
+        "\n## Fact sheet (computed in code from filings and prices; ground truth)\n",
+        state.get("fact_sheet_text") or "(none)",
         "\n## Digest (the summary readers see first)\n",
         json.dumps(state.get("report_digest"), indent=1),
     ]
@@ -117,258 +126,201 @@ def build_prompt(run: dict, grounded: bool = False) -> str:
     return "\n".join(parts)
 
 
-def _strict_schema(node):
-    """Pydantic's schema made acceptable to the API's structured output:
-    additionalProperties false on every object, no numeric bounds."""
+def _schema(node):
+    """Pydantic's schema with additionalProperties false on every object. The
+    0–5 bounds are stated in the field descriptions and enforced on parse; a
+    judgement that fails the parse is sent back with the error."""
     if isinstance(node, dict):
         if node.get("type") == "object":
             node["additionalProperties"] = False
-        # Numeric bounds aren't accepted in the schema; the response is
-        # validated against the Pydantic model (0-5 scores) afterwards.
         for key in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"):
             node.pop(key, None)
         for value in node.values():
-            _strict_schema(value)
+            _schema(value)
     elif isinstance(node, list):
         for value in node:
-            _strict_schema(value)
+            _schema(value)
     return node
 
 
-JUDGEMENT_SCHEMA = _strict_schema(Judgement.model_json_schema())
-
-
-def judge_one(client, run: dict) -> tuple[Judgement, dict]:
-    """One judgement, streamed (long input and output). Refusals and
-    unparseable output raise, so the caller records the failure."""
-    with client.messages.stream(
-        model=JUDGE_MODEL,
-        max_tokens=32000,
-        output_config={
-            "effort": "high",
-            "format": {"type": "json_schema", "schema": JUDGEMENT_SCHEMA},
-        },
-        messages=[{"role": "user", "content": build_prompt(run)}],
-    ) as stream:
-        message = stream.get_final_message()
-    if message.stop_reason == "refusal":
-        raise RuntimeError(f"judge refused: {getattr(message, 'stop_details', None)}")
-    text = next(b.text for b in message.content if b.type == "text")
-    usage = {"tokens_in": message.usage.input_tokens, "tokens_out": message.usage.output_tokens}
-    return Judgement.model_validate_json(text), usage
-
-
-MAX_TOOL_ROUNDS = 40
-
-
-def judge_grounded(client, run: dict) -> tuple[Judgement, dict]:
-    """The judgement with the fact sheet and the fact/calc tools; it ends by
-    calling submit_judgement. Usage sums every round (cache reads included)."""
-    from tradingagents.quality.editor import calc, fact
-    from tradingagents.quality.lint import Facts
-
-    facts = Facts((run.get("state") or {}).get("fact_sheet"))
-    tools = [
-        {"name": "fact", "description": "Look up one fact-sheet key, e.g. revenue.2026Q2.",
-         "input_schema": {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]}},
-        {"name": "calc", "description": "Evaluate an arithmetic expression (numbers, + - * / ** and parentheses).",
-         "input_schema": {"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]}},
-        {"name": "submit_judgement", "description": "Submit the finished judgement. Call exactly once, last.",
-         "input_schema": _strict_schema(GroundedJudgement.model_json_schema())},
-    ]
-    messages = [{"role": "user", "content": [
-        {"type": "text", "text": build_prompt(run, grounded=True), "cache_control": {"type": "ephemeral"}}]}]
-    usage = {"tokens_in": 0, "tokens_out": 0, "cache_read": 0, "cache_write": 0, "rounds": 0, "tool_calls": 0}
-    for _ in range(MAX_TOOL_ROUNDS):
-        with client.messages.stream(model=JUDGE_MODEL, max_tokens=32000, output_config={"effort": "high"},
-                                    tools=tools, messages=messages) as stream:
-            message = stream.get_final_message()
-        u = message.usage
-        usage["tokens_in"] += u.input_tokens
-        usage["tokens_out"] += u.output_tokens
-        usage["cache_read"] += getattr(u, "cache_read_input_tokens", 0) or 0
-        usage["cache_write"] += getattr(u, "cache_creation_input_tokens", 0) or 0
-        usage["rounds"] += 1
-        if message.stop_reason == "refusal":
-            raise RuntimeError("judge refused")
-        messages.append({"role": "assistant", "content": message.content})
-        calls = [b for b in message.content if b.type == "tool_use"]
-        if not calls:
-            messages.append({"role": "user", "content": "Finish by calling submit_judgement."})
-            continue
-        results = []
-        for call in calls:
-            if call.name == "submit_judgement":
-                return GroundedJudgement.model_validate(call.input), usage
-            usage["tool_calls"] += 1
-            out = calc(call.input.get("expression", "")) if call.name == "calc" else fact(facts, call.input.get("key", ""))
-            results.append({"type": "tool_result", "tool_use_id": call.id, "content": out})
-        messages.append({"role": "user", "content": results})
-    raise RuntimeError("the judge did not submit a judgement")
-
-
-# A second judge from another family, through OpenRouter (2026-10-09): its
-# own family's reports and the other's, to expose self-preference.
-OTHER_JUDGE_PRICES = {"openai/gpt-6.1-sol": (2.00, 10.00)}
-
-
-def judge_grounded_openrouter(model: str, run: dict) -> tuple[Judgement, dict]:
-    """The grounded judgement from a model on OpenRouter (OpenAI-style tools)."""
-    import os
-
-    from openai import OpenAI
-
-    from tradingagents.quality.editor import calc, fact
-    from tradingagents.quality.lint import Facts
-
-    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=os.environ["OPENROUTER_API_KEY"])
-    facts = Facts((run.get("state") or {}).get("fact_sheet"))
-
+def _tools() -> list[dict]:
     def tool(name, description, parameters):
         return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
 
-    tools = [
+    return [
         tool("fact", "Look up one fact-sheet key, e.g. revenue.2026Q2.",
              {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]}),
         tool("calc", "Evaluate an arithmetic expression (numbers, + - * / ** and parentheses).",
              {"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]}),
-        tool("submit_judgement", "Submit the finished judgement. Call exactly once, last.",
-             _strict_schema(GroundedJudgement.model_json_schema())),
+        tool("submit_judgement", "Submit the finished judgement. Call it once, last, and on its own.",
+             _schema(Judgement.model_json_schema())),
     ]
-    messages = [{"role": "user", "content": build_prompt(run, grounded=True)}]
-    usage = {"tokens_in": 0, "tokens_out": 0, "cache_read": 0, "cache_write": 0, "rounds": 0, "tool_calls": 0}
+
+
+def judge(client, model: str, run: dict) -> tuple[Judgement, dict]:
+    """One grounded judgement through OpenRouter. Usage and OpenRouter's own
+    billed cost sum over every round. A judgement that breaks the schema, or
+    one submitted beside unanswered tool calls, is sent back to be redone."""
+    from tradingagents.quality.editor import calc, fact
+    from tradingagents.quality.lint import Facts
+
+    facts = Facts((run.get("state") or {}).get("fact_sheet"))
+    prompt = {"type": "text", "text": build_prompt(run)}
+    if model.startswith("anthropic/"):
+        # Explicit caching on Claude (OpenRouter passes it through); the
+        # others cache long prefixes automatically.
+        prompt["cache_control"] = {"type": "ephemeral"}
+    messages: list[dict] = [{"role": "user", "content": [prompt]}]
+    usage = {"tokens_in": 0, "tokens_out": 0, "cache_read": 0, "cache_write": 0, "cost_usd": 0.0,
+             "rounds": 0, "tool_calls": 0, "schema_retries": 0}
     for _ in range(MAX_TOOL_ROUNDS):
-        resp = client.chat.completions.create(model=model, messages=messages, tools=tools, max_tokens=32000,
-                                              extra_body={"reasoning": {"effort": "high"}})
+        resp = client.chat.completions.create(
+            model=model, messages=messages, tools=_tools(), max_tokens=32000,
+            extra_body={"reasoning": {"effort": "high"}, "usage": {"include": True}})
+        if not resp.choices:
+            raise RuntimeError(f"no choices in the response: {getattr(resp, 'error', None) or resp}")
         u = resp.usage
-        cached = getattr(getattr(u, "prompt_tokens_details", None), "cached_tokens", 0) or 0
-        usage["tokens_in"] += u.prompt_tokens - cached
+        extra = getattr(u, "model_extra", None) or {}
+        details = getattr(u, "prompt_tokens_details", None)
+        cached = getattr(details, "cached_tokens", 0) or 0
+        written = (getattr(details, "model_extra", None) or {}).get("cache_write_tokens", 0) or 0
+        usage["tokens_in"] += u.prompt_tokens - cached - written
         usage["cache_read"] += cached
+        usage["cache_write"] += written
         usage["tokens_out"] += u.completion_tokens
+        usage["cost_usd"] += float(extra.get("cost") or 0)
         usage["rounds"] += 1
-        msg = resp.choices[0].message
+        choice = resp.choices[0]
+        if choice.finish_reason == "length":
+            raise RuntimeError("the judge ran out of output tokens")
+        msg = choice.message
         messages.append(msg.model_dump(exclude_none=True))
-        if not msg.tool_calls:
+        calls = msg.tool_calls or []
+        if not calls:
             messages.append({"role": "user", "content": "Finish by calling submit_judgement."})
             continue
-        for call in msg.tool_calls:
-            args = json.loads(call.function.arguments or "{}")
-            if call.function.name == "submit_judgement":
-                return GroundedJudgement.model_validate(args), usage
+        others = [c for c in calls if c.function.name != "submit_judgement"]
+        for call in calls:
+            name = call.function.name
+            try:
+                args = json.loads(call.function.arguments or "{}")
+            except json.JSONDecodeError as exc:
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": f"error: invalid JSON ({exc})"})
+                continue
+            if name == "submit_judgement":
+                if others:
+                    messages.append({"role": "tool", "tool_call_id": call.id, "content":
+                                     "error: not submitted. Read the tool results first, then call "
+                                     "submit_judgement on its own."})
+                    continue
+                try:
+                    return Judgement.model_validate(args), usage
+                except ValidationError as exc:
+                    usage["schema_retries"] += 1
+                    if usage["schema_retries"] > MAX_SCHEMA_RETRIES:
+                        raise
+                    messages.append({"role": "tool", "tool_call_id": call.id,
+                                     "content": f"error: the judgement does not match the schema; fix and resubmit:\n{exc}"})
+                    continue
             usage["tool_calls"] += 1
-            out = calc(args.get("expression", "")) if call.function.name == "calc" else fact(facts, args.get("key", ""))
+            out = calc(args.get("expression", "")) if name == "calc" else fact(facts, args.get("key", ""))
             messages.append({"role": "tool", "tool_call_id": call.id, "content": out})
     raise RuntimeError("the judge did not submit a judgement")
 
 
-def _judge_cost(usage: dict, model: str = JUDGE_MODEL) -> float:
-    """Input at list price, cache writes at 1.25x, cache reads at 0.1x (an
-    estimate for non-Anthropic judges)."""
-    price = OTHER_JUDGE_PRICES.get(model, JUDGE_PRICE)
-    return (usage["tokens_in"] * price[0] + usage.get("cache_write", 0) * price[0] * 1.25
-            + usage.get("cache_read", 0) * price[0] * 0.1 + usage["tokens_out"] * price[1]) / 1e6
+def _slug(model: str) -> str:
+    return model.split("/")[-1]
+
+
+def _fingerprint(run_file: Path, model: str) -> dict:
+    """What a saved judgement was made from; a mismatch means re-judge."""
+    prompt_parts = (EVAL_DIR / "rubric.md").read_bytes() + GROUNDING.encode() + Path(__file__).read_bytes()
+    return {"judge_version": JUDGE_VERSION, "model": model,
+            "prompt_sha256": hashlib.sha256(prompt_parts).hexdigest()[:16],
+            "run_sha256": hashlib.sha256(run_file.read_bytes()).hexdigest()[:16]}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--label", required=True)
-    parser.add_argument("--env", help="env file with ANTHROPIC_API_KEY")
-    parser.add_argument(
-        "--judge-run", type=int, default=1,
-        help="judge the same reports again under a new number, to measure judge noise",
-    )
-    parser.add_argument("--grounded", action="store_true",
-                        help="give the judge the fact sheet and the fact/calc tools (judgement-grounded*.json)")
-    parser.add_argument("--judge-model", default=JUDGE_MODEL,
-                        help="an OpenRouter model id (e.g. openai/gpt-6.1-sol) for a second, grounded judge")
+    parser.add_argument("--env", help="env file with OPENROUTER_API_KEY")
+    parser.add_argument("--judge-model", default=DEFAULT_JUDGE, help="an OpenRouter model id")
+    parser.add_argument("--strict", action="store_true", help="exit 1 when any report could not be judged")
     args = parser.parse_args()
-    other = args.judge_model != JUDGE_MODEL
-    if other:
-        args.grounded = True
-    suffix = (("-grounded" if args.grounded else "") + (f"-{args.judge_model.split('/')[-1]}" if other else "")
-              + ("" if args.judge_run == 1 else f"-{args.judge_run}"))
     load_env(args.env)
 
-    import anthropic
+    from openai import OpenAI
 
     sys.path.insert(0, str(EVAL_DIR.parent.parent / "server"))
     from app.prices import estimate_cost_usd
 
-    client = anthropic.Anthropic()
+    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=os.environ["OPENROUTER_API_KEY"])
     label_dir = RUNS_DIR / args.label
-    rows, judge_cost, pipeline_cost, failed = [], 0.0, 0.0, []
-    for run_file in sorted(label_dir.glob("*/run.json")):
+    expected = [t["ticker"] for t in golden_set()["tickers"]]
+    present = {p.parent.name for p in label_dir.glob("*/run.json")}
+    missing_runs = [t for t in expected if t not in present]
+    rows, failed = [], []
+    for ticker in [t for t in expected if t in present]:
+        run_file = label_dir / ticker / "run.json"
         run = json.loads(run_file.read_text(encoding="utf-8"))
-        out = run_file.parent / f"judgement{suffix}.json"
-        if out.is_file():
-            saved = json.loads(out.read_text(encoding="utf-8"))
-        else:
+        out = run_file.parent / f"judgement-{_slug(args.judge_model)}.json"
+        made_from = _fingerprint(run_file, args.judge_model)
+        saved = json.loads(out.read_text(encoding="utf-8")) if out.is_file() else None
+        if not saved or saved.get("made_from") != made_from:
             try:
-                if other:
-                    judgement, usage = judge_grounded_openrouter(args.judge_model, run)
-                else:
-                    judgement, usage = (judge_grounded if args.grounded else judge_one)(client, run)
+                judgement, usage = judge(client, args.judge_model, run)
             except Exception as exc:  # noqa: BLE001 — record and continue
-                failed.append(run["ticker"])
-                print(f"  {run['ticker']}: judge failed ({exc})", flush=True)
+                failed.append(ticker)
+                print(f"  {ticker}: judge failed ({type(exc).__name__}: {str(exc)[:300]})", flush=True)
                 continue
-            saved = {"judgement": judgement.model_dump(), "usage": usage}
+            saved = {"judgement": judgement.model_dump(), "usage": usage, "made_from": made_from}
             out.write_text(json.dumps(saved, indent=1), encoding="utf-8")
         j, usage = saved["judgement"], saved["usage"]
-        cost_j = _judge_cost(usage, args.judge_model)
-        cost_p = estimate_cost_usd(run["usage_by_model"]) or 0.0
-        judge_cost += cost_j
-        pipeline_cost += cost_p
-        lb = sum(1 for f in j["findings"] if f["load_bearing"])
-        lb_checked = sum(1 for f in j["findings"] if f["load_bearing"] and f.get("checked"))
+        lb = [f for f in j["findings"] if f["load_bearing"]]
+        quality = (run.get("state") or {}).get("quality") or {}
         rows.append({
-            "ticker": run["ticker"],
-            "rating": run["rating"],
-            "scores": j["scores"],
+            "ticker": ticker, "rating": run["rating"], "scores": j["scores"],
             "mean_score": round(sum(j["scores"].values()) / len(CLASSES), 2),
-            "load_bearing_errors": lb,
-            "load_bearing_checked": lb_checked,
-            "minor_errors": len(j["findings"]) - lb,
-            "verdict": j["verdict"],
-            "pipeline_cost_usd": round(cost_p, 4),
-            "seconds": run["seconds"],
-            "summary": j["summary"],
+            "load_bearing_errors": len(lb), "load_bearing_checked": sum(1 for f in lb if f.get("checked")),
+            "minor_errors": len(j["findings"]) - len(lb), "verdict": j["verdict"],
+            "quality_status": run.get("quality_status") or quality.get("status"),
+            "revisions": run.get("revisions"),
+            "pipeline_cost_usd": estimate_cost_usd(run.get("usage_by_model") or {}),
+            "judge_cost_usd": round(usage.get("cost_usd") or 0, 4),
+            "seconds": run["seconds"], "summary": j["summary"],
         })
-        print(f"  {run['ticker']}: mean {rows[-1]['mean_score']}, {lb} load-bearing, {j['verdict']}", flush=True)
+        print(f"  {ticker}: mean {rows[-1]['mean_score']}, {len(lb)} load-bearing, {j['verdict']}", flush=True)
 
     if not rows:
         print("nothing judged")
         return 1
     n = len(rows)
+    costs = [r["pipeline_cost_usd"] for r in rows]
     summary = {
-        "label": args.label,
-        "judge_run": args.judge_run,
-        "date": dt.date.today().isoformat(),
+        "label": args.label, "date": dt.date.today().isoformat(), "judge_model": args.judge_model,
+        "judge_version": JUDGE_VERSION,
         "settings": json.loads((label_dir / "settings.json").read_text(encoding="utf-8")),
-        "judge_model": args.judge_model,
-        "reports": n,
+        "reports": n, "tickers": [r["ticker"] for r in rows],
+        "missing_runs": missing_runs, "judge_failed": failed,
         "mean_scores": {c: round(sum(r["scores"][c] for r in rows) / n, 2) for c in CLASSES},
         "mean_score": round(sum(r["mean_score"] for r in rows) / n, 2),
         "load_bearing_errors": sum(r["load_bearing_errors"] for r in rows),
         "load_bearing_checked": sum(r["load_bearing_checked"] for r in rows),
-        "grounded": args.grounded,
         "reports_with_load_bearing_errors": sum(1 for r in rows if r["load_bearing_errors"]),
         "verdicts": {v: sum(1 for r in rows if r["verdict"] == v) for v in ("publish", "publish_with_fixes", "do_not_publish")},
-        "pipeline_cost_usd": round(pipeline_cost, 2),
-        "pipeline_cost_per_report_usd": round(pipeline_cost / n, 3),
-        "judge_cost_usd": round(judge_cost, 2),
+        # None when a model is unpriced: a missing price never reads as $0.
+        "pipeline_cost_usd": round(sum(costs), 2) if all(c is not None for c in costs) else None,
+        "judge_cost_usd": round(sum(r["judge_cost_usd"] for r in rows), 2),
         "median_seconds": sorted(r["seconds"] for r in rows)[n // 2],
-        "judge_failed": failed,
         "rows": rows,
     }
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out = RESULTS_DIR / f"{summary['date']}-{args.label}{suffix and '-judge' + suffix}.json"
+    out = RESULTS_DIR / f"{summary['date']}-{args.label}-{_slug(args.judge_model)}.json"
     out.write_text(json.dumps(summary, indent=1), encoding="utf-8")
-    print(f"\n{out.relative_to(EVAL_DIR)}: mean {summary['mean_score']}/5, "
-          f"{summary['load_bearing_errors']} load-bearing errors in "
-          f"{summary['reports_with_load_bearing_errors']}/{n} reports, verdicts {summary['verdicts']}, "
-          f"pipeline ${summary['pipeline_cost_usd']}, judge ${summary['judge_cost_usd']}")
-    return 1 if failed else 0
+    print(f"\n{out.relative_to(EVAL_DIR)}: {n} reports (missing runs {missing_runs}, judge failed {failed}), "
+          f"mean {summary['mean_score']}/5, {summary['load_bearing_errors']} load-bearing, "
+          f"verdicts {summary['verdicts']}, judge ${summary['judge_cost_usd']}")
+    return 1 if (failed and args.strict) else 0
 
 
 if __name__ == "__main__":

@@ -355,3 +355,13 @@ def test_a_digest_patch_with_review_vocabulary_is_rejected():
                                              "value": "Underweight: spending is outrunning cash conversion"}],
                                   editor.Facts(SHEET))
     assert fixed["headline"] == "Underweight: spending is outrunning cash conversion"
+
+
+@pytest.mark.unit
+def test_effort_reaches_models_behind_openrouter(monkeypatch):
+    """All testing runs through OpenRouter (2026-10-09): the editor's medium
+    effort must reach a Claude or GPT model there as OpenRouter's reasoning."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    llm = editor.create_editor_llm({"llm_provider": "anthropic", "deep_think_llm": "x", "editor_provider": "openrouter",
+                                    "editor_llm": "anthropic/claude-sonnet-5.5", "editor_effort": "medium"})
+    assert llm.extra_body == {"reasoning": {"effort": "medium"}}

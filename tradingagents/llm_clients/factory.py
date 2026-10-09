@@ -107,6 +107,13 @@ def build_llm_kwargs(config: dict) -> dict[str, Any]:
         if effort:
             kwargs["effort"] = effort
 
+    elif provider == "openrouter":
+        # One effort knob for any model behind OpenRouter (its "reasoning"
+        # parameter), so a Claude or GPT model there runs as it would direct.
+        effort = config.get("openai_reasoning_effort") or config.get("anthropic_effort")
+        if effort:
+            kwargs["reasoning_effort"] = effort
+
     # Sampling temperature is cross-provider: forward it whenever set.
     # float() here so a value coming from a TRADINGAGENTS_TEMPERATURE env
     # string ("0.2") works the same as a programmatic float.
