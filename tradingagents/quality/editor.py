@@ -179,7 +179,12 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None) -> dict:
     # The ~50K-token brief and record are re-sent on every tool round; cached,
     # repeats bill at a fraction of the input price (staging eval, 2026-10-08:
     # 14 rounds, 737K input tokens for one review).
-    messages = [HumanMessage(content=[{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}])]
+    # Prompt caching is explicit on Anthropic only; other providers cache
+    # automatically and may reject the field.
+    block = {"type": "text", "text": prompt}
+    if type(llm).__name__ == "ChatAnthropic":
+        block["cache_control"] = {"type": "ephemeral"}
+    messages = [HumanMessage(content=[block])]
     for _ in range(MAX_TOOL_ROUNDS):
         reply = bound.invoke(messages, config={"callbacks": callbacks or []})
         messages.append(reply)
@@ -296,13 +301,20 @@ def apply_patch(digest: dict, patch: list[dict], facts: Facts) -> tuple[dict, li
 
 
 def create_editor_llm(config: dict, callbacks: list | None = None):
-    """The editor's model: ``config["editor_llm"]`` on the run's provider, at
-    ``config["editor_effort"]`` (platform: claude-opus-5-5, high)."""
+    """The editor's model: ``config["editor_llm"]`` on ``config["editor_provider"]``
+    (else the run's provider), at ``config["editor_effort"]`` (platform:
+    claude-sonnet-5-5, medium)."""
     from tradingagents.llm_clients.factory import build_llm_kwargs, create_llm_client
 
-    provider = config["llm_provider"].lower()
-    kwargs = build_llm_kwargs({**config, "anthropic_effort": config.get("editor_effort") or config.get("anthropic_effort"),
-                               "temperature": None})
+    provider = (config.get("editor_provider") or config["llm_provider"]).lower()
+    effort = config.get("editor_effort")
+    # One effort setting, in each provider's own knob.
+    kwargs = build_llm_kwargs({**config, "llm_provider": provider, "temperature": None,
+                               "anthropic_effort": effort or config.get("anthropic_effort"),
+                               "openai_reasoning_effort": effort or config.get("openai_reasoning_effort"),
+                               "google_thinking_level": effort or config.get("google_thinking_level")})
+    # backend_url belongs to llm_provider; another provider uses its default.
+    base_url = config.get("backend_url") if provider == config["llm_provider"].lower() else None
     extra = {"callbacks": callbacks} if callbacks else {}
     return create_llm_client(provider=provider, model=config.get("editor_llm") or config["deep_think_llm"],
-                             base_url=config.get("backend_url"), **kwargs, **extra).get_llm()
+                             base_url=base_url, **kwargs, **extra).get_llm()

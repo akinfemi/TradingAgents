@@ -146,6 +146,7 @@ def build_default_config() -> dict:
         "sentiment_rules": False,
         "editor_llm": None,        # defaults to deep_think_llm
         "editor_effort": None,
+        "editor_provider": None,   # defaults to llm_provider
         # Output language for analyst reports and final decision
         # Internal agent debate stays in English for reasoning quality
         "output_language": "English",

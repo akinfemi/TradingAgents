@@ -24,6 +24,11 @@ _ENV_KEYS = (
     "LLM_PROVIDER",
     "DEEP_THINK_LLM",
     "QUICK_THINK_LLM",
+    "DEEP_THINK_PROVIDER",
+    "QUICK_THINK_PROVIDER",
+    "EDITOR_PROVIDER",
+    "EDITOR_LLM",
+    "EDITOR_EFFORT",
     "PRICE_VENDOR",
 )
 
@@ -64,6 +69,11 @@ def platform_config() -> dict:
         deep_think_llm=os.environ.get("DEEP_THINK_LLM", "claude-sonnet-5"),
         quick_think_llm=os.environ.get("QUICK_THINK_LLM", "claude-haiku-5-5"),
         price_vendor=os.environ.get("PRICE_VENDOR", "yfinance"),
+        deep_think_provider=os.environ.get("DEEP_THINK_PROVIDER", ""),
+        quick_think_provider=os.environ.get("QUICK_THINK_PROVIDER", ""),
+        editor_provider=os.environ.get("EDITOR_PROVIDER", ""),
+        editor_llm=os.environ.get("EDITOR_LLM", Settings.model_fields["editor_llm"].default),
+        editor_effort=os.environ.get("EDITOR_EFFORT", Settings.model_fields["editor_effort"].default),
     )
     config = dict(DEFAULT_CONFIG)
     config.update(build_config_overrides(settings))

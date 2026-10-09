@@ -301,3 +301,26 @@ def test_dismissals_resolve_by_lint_id():
     prompt = editor.build_prompt({"fact_sheet_text": "s"}, {"flags": flags})
     assert "- L1 [load_bearing · unsupported]" in prompt and "lint_dismissed" in prompt
     assert "do not mention the errata" in errata.render([{"id": "E1", "severity": "minor", "kind": "k", "quote": "q"}])
+
+
+@pytest.mark.unit
+def test_the_editor_can_run_on_another_provider(monkeypatch):
+    seen = {}
+
+    class Client:
+        def get_llm(self):
+            return "llm"
+
+    def fake_create(provider, model, base_url=None, **kwargs):
+        seen.update(provider=provider, model=model, base_url=base_url, **kwargs)
+        return Client()
+
+    import tradingagents.llm_clients.factory as factory
+    monkeypatch.setattr(factory, "create_llm_client", fake_create)
+    config = {"llm_provider": "anthropic", "deep_think_llm": "claude-sonnet-5", "backend_url": "https://proxy",
+              "editor_llm": "gpt-6.1-sol", "editor_provider": "openai", "editor_effort": "medium"}
+    editor.create_editor_llm(config)
+    assert seen["provider"] == "openai" and seen["model"] == "gpt-6.1-sol"
+    assert seen["base_url"] is None and seen["reasoning_effort"] == "medium" and "effort" not in seen
+    editor.create_editor_llm({**config, "editor_provider": None, "editor_llm": "claude-sonnet-5-5"})
+    assert seen["provider"] == "anthropic" and seen["base_url"] == "https://proxy" and seen["effort"] == "medium"
