@@ -663,10 +663,20 @@ def check_target(decision: dict | None, facts: Facts) -> list[LintFlag]:
     # R7: the target is derived — its math ends at it, and it sits between
     # the bear and bull cases.
     math = decision.get("target_math") or ""
-    ends = figures(math.rsplit("=", 1)[-1]) if "=" in math else []
-    if math and ends and ends[-1].kind == "usd" and abs(ends[-1].value - target) > max(0.02 * target, 0.01):
+    # Every "= $x" result in the math; the target must be one of them. The
+    # field often carries the bear and bull cases after the base case, so
+    # the last result is not the target's (eval 2026-10-09: 4 of 6 GPT
+    # reports flagged against their bull case).
+    results = []
+    for part in math.split("=")[1:]:
+        figs = figures(part[:80])
+        if figs and figs[0].kind == "usd":
+            results.append(figs[0].value)
+    tolerance = max(0.02 * target, 0.01)
+    if results and not any(abs(r - target) <= tolerance for r in results):
+        shown = ", ".join(f"{r:,.2f}" for r in results[:4])
         flags.append(LintFlag("load_bearing", "target_math", "portfolio_manager", "pm.price_target",
-                              math[:300], f"the math ends at {ends[-1].value:,.2f}, the target is {target:,.2f}"))
+                              math[:300], f"no result in the math is the target {target:,.2f} (results: {shown})"))
     bear, bull = decision.get("bear_case_value"), decision.get("bull_case_value")
     if isinstance(bear, (int, float)) and isinstance(bull, (int, float)) and not min(bear, bull) <= target <= max(bear, bull):
         flags.append(LintFlag("load_bearing", "target_range", "portfolio_manager", "pm.price_target",

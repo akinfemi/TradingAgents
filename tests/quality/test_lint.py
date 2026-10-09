@@ -276,3 +276,16 @@ def test_research_manager_labels_are_not_flagged_outside_the_digest():
     flags = [f for f in lint_state(state)["flags"] if f["kind"] == "process_language"]
     assert [(f["stage"], f["field"]) for f in flags] == [("digest", "digest.bull_points")]
     assert flags[0]["severity"] == "load_bearing" and flags[0]["blocking"]
+
+
+@pytest.mark.unit
+def test_target_math_with_bear_and_bull_cases_after_the_base(sheet):
+    """Eval 2026-10-09: the last '=' was the bull case, not the target."""
+    close = sheet.value("price.close")
+    target = round(close * 0.9, 2)
+    decision = {"rating": "Underweight", "price_target": target,
+                "target_math": f"Base: 28x × EPS = ${target:,.2f}. Bear: 25x = ${target * 0.8:,.2f}. "
+                               f"Bull: 32x = ${target * 1.15:,.2f}."}
+    assert [f.kind for f in check_target(decision, sheet) if f.kind == "target_math"] == []
+    wrong = {**decision, "price_target": round(target * 0.95, 2)}
+    assert [f.kind for f in check_target(wrong, sheet) if f.kind == "target_math"] == ["target_math"]
