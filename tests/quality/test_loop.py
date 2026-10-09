@@ -262,3 +262,11 @@ def test_a_rating_flag_reruns_the_debate():
     loop.run_with_quality(graph, "ONDS", "2026-10-05", None,
                           review_fn=review_with({"decision_flags": ["rating not supported by the evidence"]}, {}))
     assert "research" not in graph.calls[1]["revision"]["kept"]
+
+
+
+@pytest.mark.unit
+def test_a_kept_sentiment_analyst_keeps_its_structured_block():
+    st = {**state(), "sentiment_structured": {"overall_score": 6, "coverage": "30 StockTwits messages"}}
+    kept = errata.kept_outputs(st, set(), "research", loop.ANALYST_REPORT_KEYS)
+    assert kept["social"]["sentiment_structured"]["coverage"] == "30 StockTwits messages"

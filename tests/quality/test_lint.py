@@ -186,3 +186,22 @@ def test_derivations_and_compliance_are_clean(sheet, text):
 def test_a_wrong_derivation_is_still_caught(sheet):
     text = "Tangible equity: equity of $1.57B [F:equity.2026Q2] less goodwill [F:goodwill.2026Q2] is about $1.30B."
     assert [f.kind for f in lint_text(text, sheet, "research_manager", "rm") if f.severity == "load_bearing"]
+
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text", [
+    # Staging ONDS, 2026-10-08 (R7 calibration, second round).
+    "FCF went from −$52.6M to −$93.8M [F:fcf.2026Q1/2026Q2].",
+    "Reassess re-adding only after a confirmed daily close above the 50-day SMA.",
+])
+def test_combined_keys_and_conditional_reentry_are_clean(sheet, text):
+    flags = [f for f in lint_text(text, sheet, "portfolio_manager", "pm") if f.blocking]
+    assert flags == [], [(f.kind, f.expected) for f in flags]
+
+
+@pytest.mark.unit
+def test_a_key_cited_for_a_bare_number_is_not_matched_to_a_dollar_figure(sheet):
+    atr = sheet.value("atr14.usd")
+    text = f"The $7.12 stop sits about 0.17 ATR below the $7.19 close ((7.19-7.12)/{atr:.4f} [F:atr14.usd])."
+    assert [f for f in lint_text(text, sheet, "portfolio_manager", "pm") if f.kind == "cited_mismatch"] == []

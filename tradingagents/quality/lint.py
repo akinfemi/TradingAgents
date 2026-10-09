@@ -107,7 +107,25 @@ _FIGURE = re.compile(
     r")",
     re.IGNORECASE,
 )
-_CITE = re.compile(r"\[F:([^\]\s]+)\]")
+_CITE_RAW = re.compile(r"\[F:([^\]\s]+)\]")
+
+
+class _Cites:
+    """[F:key] citations, with a combined "[F:fcf.2026Q1/2026Q2]" read as the
+    two keys it names (fcf.2026Q1 and fcf.2026Q2)."""
+
+    def findall(self, text: str) -> list[str]:
+        out = []
+        for raw in _CITE_RAW.findall(text or ""):
+            if "/" in raw and "." in raw:
+                base, periods = raw.split(".", 1)
+                out.extend(f"{base}.{p}" for p in periods.split("/") if p)
+            else:
+                out.append(raw)
+        return out
+
+
+_CITE = _Cites()
 
 
 @dataclass
@@ -272,8 +290,9 @@ def _sentence_values(sentence: str, facts: Facts, kind: str, exclude: Figure | N
 
 # A figure the text itself marks as not from the filings (R7: the RM lists
 # news figures as unverified) is a disclosure, not a claim.
-_LABELLED_UNVERIFIED = re.compile(r"\b(unverified|not on the fact sheet|headline[- ]only|not verified|"
-                                  r"cannot be verified|per (?:the )?news|reported by)\b", re.I)
+_LABELLED_UNVERIFIED = re.compile(r"\b(unverified|not on the fact sheet|not a fact[- ]sheet (?:key|figure)|"
+                                  r"headline[- ]only|not verified|cannot be verified|per (?:the )?news|"
+                                  r"reported by|dropped|disregard(?:ed)?)\b", re.I)
 
 
 # ---- checks ----------------------------------------------------------------------------------
@@ -307,6 +326,16 @@ def check_numbers(text: str, facts: Facts, stage: str, field_name: str) -> list[
             siblings = [g for g in sentence_figs.get(fig.sentence, []) if g is not fig]
             comparable = [k for k in comparable
                           if not any(_matches_fact(g, facts.get(k)) for g in siblings)]
+            # An ATR key cited for a distance in ATRs ("0.17 ATR below the $7.19
+            # close, per [F:atr14.usd]") measures the distance, not this figure.
+            if re.search(r"\d(?:\.\d+)?\s*(?:x\s*)?ATRs?\b", fig.sentence):
+                comparable = [k for k in comparable if not k.startswith("atr14")]
+            # A key cited for a bare number in the sentence ("(7.19 − 7.12) / 0.4076
+            # [F:atr14.usd]") belongs to that number, not to this figure.
+            bare = [float(n.replace(",", "")) for n in re.findall(r"(?<![\w.$])\d[\d,]*\.\d+|(?<![\w.$])\d{2,}(?![\d.])", fig.sentence)]
+            comparable = [k for k in comparable
+                          if not any(abs(b - float(facts.value(k))) <= max(abs(float(facts.value(k))) * 0.005, 0.0005)
+                                     for b in bare if isinstance(facts.value(k), (int, float)))]
             if comparable:
                 expected = "; ".join(f"{k} = {facts.value(k)}" for k in comparable)
                 flags.append(LintFlag(_severity(field_name, "cited_mismatch"), "cited_mismatch", stage,
@@ -414,7 +443,8 @@ _MA_SIDE = re.compile(
     r"(?:moving\s+average|SMA|EMA|MA)\b",
     re.I,
 )
-_HEDGES = re.compile(r"\b(wrong|incorrect|false|misread|not supported|refuted?|"
+_HEDGES = re.compile(r"\b(wrong|incorrect|false|misread|not supported|refuted?|only after|re-?add|re-?enter|"
+                     r"reassess|confirmed|once|needs? to|must|"
                      r"if|would|could|should|unless|risk of|watch for|a break|breaks?|fall|falls|falling|"
                      r"drop|drops|reclaim|reclaims|until|when|previous|prior|earlier|before|not|nor|neither|"
                      r"approaching|threshold|potential|stop|stop-loss|target|entry|level)\b|[<>]", re.I)

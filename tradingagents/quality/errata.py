@@ -124,6 +124,10 @@ def kept_outputs(state: dict, rerun_analysts: set[str], first_later: str, analys
     for group, report_key in analyst_report_keys.items():
         if group not in rerun_analysts and state.get(report_key):
             kept[group] = {report_key: state[report_key]}
+            # The sentiment analyst's typed block (score, sample, coverage) goes
+            # with its report, or a revision drops it (staging ONDS, 2026-10-08).
+            if group == "social" and state.get("sentiment_structured") is not None:
+                kept[group]["sentiment_structured"] = state["sentiment_structured"]
     order = list(LATER_GROUPS)
     for group in order[: order.index(first_later)]:
         if group == "research":
