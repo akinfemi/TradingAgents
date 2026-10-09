@@ -22,6 +22,7 @@ from typing import Literal
 import pandas as pd
 from pydantic import BaseModel, Field
 
+from tradingagents.budget import reraise_if_budget
 from tradingagents.quality import edgar_ext
 from tradingagents.quality.session import clock
 
@@ -221,10 +222,62 @@ def _statement_facts(st: edgar_ext.Statements, n_show: int) -> tuple[list[Fact],
     return facts, shown, years, values
 
 
+# Without a debt tag, EV counts debt as 0 only when the balance sheet could
+# not hide much: liabilities other than derivative liabilities (which EV
+# excludes by design) at most a quarter of total assets (liabilities +
+# equity). Ford's 10-Qs tag no total debt beside $245B of liabilities on $282B
+# of assets: "no debt tagged, counted as 0" put its EV at $14B (release review
+# 2026-10-09). ONDS, whose liabilities are mostly warrant derivatives (12% of
+# assets once those are set aside), keeps its EV.
+MATERIAL_LIABILITIES = 0.25
+# A cover-page share count is the latest count when it is current: older than
+# this before the run, it's another era (Ford's companyfacts end its dei
+# series in 2011).
+COVER_MAX_AGE_DAYS = 400
+# The cover-page count against the latest weighted basic count: shares rarely
+# fall 10% in a quarter, and a count dated before the weighted quarter can't
+# lead it by more. A cover dated after the quarter may lead it (ONDS issued
+# heavily after June: 570.6M on the cover against 500.7M weighted), up to 2×.
+COVER_MAX_GAP = 0.10
+COVER_MAX_LEAD = 2.0
+
+
+def _share_basis(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, as_of: str | None):
+    """(shares, label, key, note) for market cap: the cover-page count when it
+    is current and agrees with the weighted count, else the latest weighted
+    basic count with ``note`` saying why. (None, …) when neither is usable."""
+    weighted = [(c, values.get("shares_weighted", {}).get(c.end)) for c in cols]
+    weighted = [(c, w) for c, w in weighted if w]
+    latest = weighted[-1] if weighted else None
+    cover = st.cover_shares.value if st.cover_shares else None
+    problem = None
+    if cover:
+        cover_date = st.cover_shares_date or ""
+        age = (date.fromisoformat(as_of) - date.fromisoformat(cover_date)).days if as_of and cover_date else 0
+        if age > COVER_MAX_AGE_DAYS:
+            problem = f"the cover-page count ({cover:,.0f}) is dated {cover_date}, over {COVER_MAX_AGE_DAYS} days old"
+        elif latest:
+            col, w = latest
+            ratio = cover / w
+            lead_ok = cover_date > col.end and ratio <= COVER_MAX_LEAD
+            if ratio < 1 - COVER_MAX_GAP or (ratio > 1 + COVER_MAX_GAP and not lead_ok):
+                problem = (f"the cover-page count ({cover:,.0f}, {cover_date}) is {abs(ratio - 1) * 100:.0f}% "
+                           f"off the weighted basic count for {col.calendar} ({w:,.0f})")
+        if problem is None:
+            return cover, f"cover-page shares ({cover_date})", "shares.cover", None
+    if latest:
+        col, w = latest
+        reason = f"cover-page share count not used: {problem}" if problem else "no cover-page share count filed"
+        return (w, f"weighted basic shares for {col.calendar} (a period average)", f"shares_weighted.{col.calendar}",
+                f"{reason}; market cap uses the weighted basic count for {col.calendar} [shares_weighted.{col.calendar}]")
+    return None, None, None, (f"share count unavailable: {problem}; no market cap or EV" if problem else None)
+
+
 def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, close: float | None,
-             price_date: str | None) -> tuple[list[Fact], list[str]]:
+             price_date: str | None, unavailable: list[str] | None = None) -> tuple[list[Fact], list[str]]:
     facts: list[Fact] = []
     flags: list[str] = []
+    unavailable = unavailable if unavailable is not None else []
     ends = st.quarter_ends
 
     def add(key, value, unit, concept, derivation, period):
@@ -313,17 +366,22 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
         add(f"runway_quarters.{cal}", cash_sti / -fcf_q, "quarters", "cash_runway",
             f"cash + short-term investments at {end} ÷ that quarter's cash burn (−FCF)", f"{cal}")
 
-    shares = st.cover_shares.value if st.cover_shares else None
-    if shares is not None:
+    shares, shares_label, shares_key, shares_note = _share_basis(st, cols, values, st.as_of or price_date)
+    if st.cover_shares is not None and shares_key == "shares.cover":
         facts.append(Fact(key="shares.cover", value=shares, unit="shares", period=st.cover_shares_date,
                           concept="dei:EntityCommonStockSharesOutstanding", source="sec_xbrl",
                           filed=f"{st.cover_shares.filed} {st.cover_shares.accn}"))
+    if shares_note:
+        # A stale or inconsistent cover count is left off the sheet: an agent
+        # citing [F:shares.cover] would be dividing by another decade's count.
+        unavailable.append(shares_note)
     if shares and close:
         mcap = shares * close
         add("market_cap", mcap, "usd", "market_cap",
-            f"cover-page shares ({st.cover_shares_date}) × close ({price_date})", price_date)
+            f"{shares_label} [{shares_key}] × close ({price_date})", price_date)
         debt = (v("debt", end) or 0) + (v("debt_current", end) or 0)
         debt_note = ""
+        ev_ok = True
         if v("debt", end) is None and v("debt_current", end) is None:
             parts = {c: v(c, end) for c in _DEBT_PARTS if v(c, end) is not None}
             if parts:
@@ -332,8 +390,21 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
                     "sum of " + ", ".join(_DEBT_PARTS[c] for c in parts) + " (no total-debt tag filed)", f"at {end}")
                 debt_note = f"; debt is the sum of the instruments filed at {end} [debt_total.{cal}]"
             else:
-                debt_note = f"; no debt tagged at {end}, counted as 0"
-        if cash_sti is not None:
+                liab, eq = v("liabilities", end), v("equity", end)
+                other = (liab or 0) - (v("derivative_liabilities", end) or 0)
+                assets = (liab or 0) + (eq or 0)
+                material = liab is None or eq is None or assets <= 0 or other > MATERIAL_LIABILITIES * assets
+                if material:
+                    ev_ok = False
+                    unavailable.append(
+                        f"enterprise value: no debt is tagged at {end}"
+                        + (f" and liabilities are {_m(liab)} against {_m(assets)} of assets" if liab is not None
+                           and assets > 0 else "")
+                        + ", so debt can't be set to 0; no EV or EV/Sales (use market cap)")
+                else:
+                    debt_note = (f"; no debt tagged at {end}, counted as 0 (liabilities other than derivatives "
+                                 f"are {_m(other)}, {other / assets * 100:.0f}% of assets)")
+        if cash_sti is not None and ev_ok:
             ev = mcap - cash_sti + debt
             add("ev", ev, "usd", "enterprise_value",
                 f"market cap − cash − short-term investments + debt at {end}{debt_note}; "
@@ -475,6 +546,7 @@ def _describe_business(sheet: FactSheet, st: edgar_ext.Statements, trade_date: s
                 description_source=f"10-K filed {filing['filed']} ({filing['accn']}), Item 1, summarised",
             )
     except Exception as exc:  # noqa: BLE001
+        reraise_if_budget(exc)   # the summary is a model call on the run's budget
         logger.info("fact sheet: business description for %s skipped: %s", sheet.ticker, exc)
 
 
@@ -614,7 +686,7 @@ def build(ticker: str, trade_date: str, run_started_at: str | None = None, asset
             facts, cols, years, values = _statement_facts(st, n_quarters)
             sheet.facts.extend(facts)
             sheet.quarters, sheet.years = cols, years
-            derived, flags = _derived(st, cols, values, close, last_bar)
+            derived, flags = _derived(st, cols, values, close, last_bar, sheet.unavailable)
             sheet.facts.extend(derived)
             sheet.flags.extend(flags)
             sheet.identity = _identity(st)
@@ -632,9 +704,18 @@ def build(ticker: str, trade_date: str, run_started_at: str | None = None, asset
                     concept="next_earnings_date", source="computed",
                     derivation=f"{nxt['status']}: {nxt['basis']}"))
         except Exception as exc:  # noqa: BLE001
+            reraise_if_budget(exc)
             logger.warning("fact sheet: statements for %s failed: %s", ticker, exc, exc_info=True)
             sheet.unavailable.append("SEC statements could not be read; no fundamentals figures")
 
+    if st is not None and not sheet.quarters and not any(u.startswith("SEC statements") for u in sheet.unavailable):
+        # A 20-F filer (US GAAP or IFRS) files no quarterly statements: say so,
+        # or the agents are told the sheet holds the company's statements.
+        forms = ((st.submissions.get("filings") or {}).get("recent") or {}).get("form") or []
+        foreign = any(str(f).startswith(("20-F", "40-F")) for f in forms)
+        sheet.unavailable.append(
+            "SEC statements unavailable: " + ("annual-only 20-F/IFRS filer, " if foreign else "")
+            + "no quarterly statements on file; no fundamentals figures")
     sheet.session = clock(run_started_at, asset_type, last_bar, us_listed=st is not None)
     return sheet
 

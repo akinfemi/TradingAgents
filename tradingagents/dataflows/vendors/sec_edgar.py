@@ -136,8 +136,12 @@ def cik_for(ticker: str) -> str | None:
     """The filer's CIK, or None when the ticker is not a US filer."""
     table = _cached_json(_TICKERS_URL, "company_tickers.json")
     wanted = ticker.strip().upper()
-    for entry in table.values():
-        if entry.get("ticker", "").upper() == wanted:
+    # SEC lists share classes with a dash (BRK-B); quotes write BRK.B or BRK/B.
+    candidates = [wanted] + [wanted.replace(sep, "-") for sep in (".", "/") if sep in wanted]
+    by_ticker = {entry.get("ticker", "").upper(): entry for entry in table.values()}
+    for candidate in candidates:
+        entry = by_ticker.get(candidate)
+        if entry is not None:
             return f"{int(entry['cik_str']):010d}"
     return None
 

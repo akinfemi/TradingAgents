@@ -351,3 +351,108 @@ def test_debt_filed_by_instrument_is_summed_into_ev():
 @pytest.mark.unit
 def test_a_debt_total_tag_is_never_summed_with_instruments(onds):
     assert onds.get("debt_total.2026Q2") is None
+
+
+# ---- release review 2026-10-09: EV without a debt tag, stale cover counts, 20-F filers ----------
+
+
+QUARTERS = [("2025-01-01", "2025-03-31"), ("2025-04-01", "2025-06-30"), ("2025-07-01", "2025-09-30"),
+            ("2025-10-01", "2025-12-31"), ("2026-01-01", "2026-03-31")]
+
+
+def _companyfacts(liabilities, equity, cover=None, weighted=4.0e9, derivatives=None):
+    """A minimal 10-Q filer: five quarters of revenue, cash, liabilities,
+    equity and weighted shares; no debt tag; an optional cover count
+    (value, date)."""
+    def flow(val, unit="USD"):
+        return {"units": {unit: [{"start": s, "end": e, "val": val, "filed": "2026-05-01", "form": "10-Q",
+                                  "accn": f"q{i}"} for i, (s, e) in enumerate(QUARTERS)]}}
+
+    def stock(val):
+        return {"units": {"USD": [{"end": e, "val": val, "filed": "2026-05-01", "form": "10-Q", "accn": f"q{i}"}
+                                  for i, (_s, e) in enumerate(QUARTERS)]}}
+
+    us_gaap = {"Revenues": flow(45e9), "NetIncomeLoss": flow(1e9), "CashAndCashEquivalentsAtCarryingValue": stock(20e9),
+               "Liabilities": stock(liabilities), "StockholdersEquity": stock(equity),
+               "WeightedAverageNumberOfSharesOutstandingBasic": flow(weighted, "shares")}
+    if derivatives is not None:
+        us_gaap["DerivativeLiabilities"] = stock(derivatives)
+    out = {"facts": {"us-gaap": us_gaap}}
+    if cover:
+        out["facts"]["dei"] = {"EntityCommonStockSharesOutstanding": {"units": {"shares": [
+            {"end": cover[1], "val": cover[0], "filed": cover[1], "form": "10-Q", "accn": "c"}]}}}
+    return out
+
+
+def _sheet(companyfacts, as_of="2026-10-08"):
+    st = edgar_ext.from_json("0000000002", companyfacts, {"name": "Test Co"}, as_of)
+    days = pd.bdate_range(end=as_of, periods=260).strftime("%Y-%m-%d")
+    ohlcv = pd.DataFrame({"Date": days, "Open": 12.0, "High": 12.2, "Low": 11.8, "Close": 12.0, "Volume": 5e7})
+    return facts.build("TST", as_of, f"{as_of}T14:00:00Z", statements=st, ohlcv=ohlcv, offline=True)
+
+
+@pytest.mark.unit
+def test_no_debt_tag_beside_material_liabilities_gives_no_ev():
+    """Ford tags no total debt in its 10-Qs beside $245B of liabilities: EV
+    counted that debt as 0 ($14B) (release review 2026-10-09)."""
+    sheet = _sheet(_companyfacts(liabilities=245e9, equity=37e9, cover=(4.0e9, "2026-04-25")))
+    assert sheet.get("market_cap") is not None
+    assert sheet.get("ev") is None and sheet.get("ev_sales.ttm") is None and sheet.get("ev_sales.run_rate") is None
+    assert any("no debt is tagged" in u and "no EV" in u for u in sheet.unavailable)
+
+
+@pytest.mark.unit
+def test_no_debt_tag_with_small_liabilities_still_counts_debt_as_zero():
+    # Liabilities other than derivatives: 3B − 1B = 2B of 23B assets (9%).
+    sheet = _sheet(_companyfacts(liabilities=3e9, equity=20e9, cover=(4.0e9, "2026-04-25"), derivatives=1e9))
+    assert "no debt tagged at 2026-03-31, counted as 0" in sheet.get("ev").derivation
+    assert not any("enterprise value" in u for u in sheet.unavailable)
+
+
+@pytest.mark.unit
+def test_a_stale_cover_count_is_replaced_by_the_weighted_count():
+    """Ford's companyfacts end the dei cover series in 2011 (3.73B shares):
+    market cap used it for a 2026 run."""
+    sheet = _sheet(_companyfacts(liabilities=3e9, equity=20e9, cover=(3.727e9, "2011-04-28"), weighted=3.991e9))
+    assert sheet.get("shares.cover") is None
+    assert sheet.value("market_cap") == pytest.approx(3.991e9 * 12.0)
+    assert "[shares_weighted.2026Q1]" in sheet.get("market_cap").derivation
+    assert any("2011-04-28" in u and "over 400 days old" in u for u in sheet.unavailable)
+
+
+@pytest.mark.unit
+def test_a_cover_count_far_off_the_weighted_count_is_not_used():
+    sheet = _sheet(_companyfacts(liabilities=3e9, equity=20e9, cover=(2.0e9, "2026-04-25"), weighted=4.0e9))
+    assert sheet.get("shares.cover") is None
+    assert sheet.value("market_cap") == pytest.approx(4.0e9 * 12.0)
+    assert any("50% off the weighted basic count" in u for u in sheet.unavailable)
+
+
+@pytest.mark.unit
+def test_a_current_cover_count_is_used_and_named(onds):
+    assert onds.get("shares.cover") is not None
+    assert onds.get("market_cap").derivation.startswith("cover-page shares (")
+    assert "[shares.cover]" in onds.get("market_cap").derivation
+
+
+@pytest.mark.unit
+def test_an_annual_only_20f_filer_says_its_statements_are_unavailable():
+    companyfacts = {"facts": {"us-gaap": {"Revenues": {"units": {"CNY": [
+        {"start": "2025-04-01", "end": "2026-03-31", "val": 9.9e11, "filed": "2026-06-20", "form": "20-F", "accn": "a"}]}}}}}
+    submissions = {"name": "Foreign ADR Ltd", "filings": {"recent": {"form": ["20-F"]}}}
+    st = edgar_ext.from_json("0000000001", companyfacts, submissions, "2026-10-08")
+    ohlcv = pd.DataFrame({"Date": pd.bdate_range(end="2026-10-08", periods=30).strftime("%Y-%m-%d"),
+                          "Open": 10.0, "High": 10.5, "Low": 9.5, "Close": 10.0, "Volume": 1e6})
+    sheet = facts.build("FADR", "2026-10-08", "2026-10-09T14:00:00Z", statements=st, ohlcv=ohlcv, offline=True)
+    assert any(u.startswith("SEC statements unavailable: annual-only 20-F/IFRS filer") for u in sheet.unavailable)
+    assert "Unavailable: " in facts.render(sheet)
+
+
+@pytest.mark.unit
+def test_a_share_class_ticker_finds_its_cik(monkeypatch):
+    from tradingagents.dataflows.vendors import sec_edgar
+
+    table = {"0": {"cik_str": 1067983, "ticker": "BRK-B", "title": "Berkshire Hathaway"}}
+    monkeypatch.setattr(sec_edgar, "_cached_json", lambda *_a, **_k: table)
+    assert sec_edgar.cik_for("BRK.B") == sec_edgar.cik_for("brk-b") == "0001067983"
+    assert sec_edgar.cik_for("BRK.C") is None
