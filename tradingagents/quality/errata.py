@@ -30,9 +30,19 @@ GROUP = {
 # the transcript's field names (rm, pm, bull…), the group names, and words.
 _STAGE_ALIASES = {
     "rm": "research_manager", "research_manager": "research_manager", "research": "research_manager",
-    "ruling": "research_manager", "investment_plan": "research_manager", "research_judge": "research_manager",
+    "investment_plan": "research_manager", "research_judge": "research_manager",
     "pm": "portfolio_manager", "portfolio_manager": "portfolio_manager", "decision": "portfolio_manager",
-    "final_trade_decision": "portfolio_manager",
+    "final_trade_decision": "portfolio_manager", "final_decision": "portfolio_manager",
+    # The typed decision's fields (PortfolioDecision) name the PM.
+    "portfolio_decision": "portfolio_manager", "rating": "portfolio_manager",
+    "executive_summary": "portfolio_manager", "investment_thesis": "portfolio_manager",
+    "price_target": "portfolio_manager", "target": "portfolio_manager", "valuation_method": "portfolio_manager",
+    "valuation_inputs": "portfolio_manager", "valuation": "portfolio_manager", "target_math": "portfolio_manager",
+    "bear_case_value": "portfolio_manager", "bull_case_value": "portfolio_manager",
+    "execution_timing": "portfolio_manager", "time_horizon": "portfolio_manager",
+    # Upstream's Risk Manager / Risk Judge is this fork's Portfolio Manager:
+    # it rules on the risk debate and writes the final decision.
+    "risk_manager": "portfolio_manager", "risk_judge": "portfolio_manager",
     "market": "market_analyst", "market_report": "market_analyst", "technical_analyst": "market_analyst",
     "sentiment": "sentiment_analyst", "social": "sentiment_analyst", "social_analyst": "sentiment_analyst",
     "social_media_analyst": "sentiment_analyst", "sentiment_report": "sentiment_analyst",
@@ -46,9 +56,11 @@ _STAGE_ALIASES = {
     "aggressive": "risk_aggressive", "conservative": "risk_conservative", "neutral": "risk_neutral",
     "aggressive_analyst": "risk_aggressive", "conservative_analyst": "risk_conservative",
     "neutral_analyst": "risk_neutral", "report_digest": "digest",
-    # Digest fields named as the stage.
+    # Digest fields named as the stage (the digest's ruling is the reader's
+    # summary of the research manager's, and is patched as digest text).
     "headline": "digest", "bull_thesis": "digest", "bear_thesis": "digest", "bull_points": "digest",
-    "bear_points": "digest", "exit_triggers": "digest",
+    "bear_points": "digest", "exit_triggers": "digest", "ruling": "digest", "sizing": "digest",
+    "conviction_note": "digest", "entry_style": "digest", "review_cycle": "digest",
 }
 
 
@@ -58,8 +70,8 @@ def normalize_stage(stage) -> str:
     "digest.headline" → digest). Unknown names come back folded."""
     text = re.sub(r"[\s\-]+", "_", str(stage or "").strip().lower()).strip("_")
     head = text.split(".")[0].split("[")[0].split("/")[0]
-    if head in ("digest", "report_digest"):
-        return "digest"
+    if head in ("digest", "report_digest") or head.endswith("_excerpt"):
+        return "digest"   # "market_excerpt" is the digest's, not the analyst's
     if head in GROUP:
         return head
     if head in _STAGE_ALIASES:
@@ -69,6 +81,14 @@ def normalize_stage(stage) -> str:
         if head.startswith(name + "_"):
             return name if name in GROUP else _STAGE_ALIASES[name]
     return head
+
+
+def deciding_stage(stage) -> str:
+    """normalize_stage, with an unknown or missing stage read as the
+    portfolio manager's: a load-bearing finding the editor placed oddly must
+    still count against publication, not be dropped."""
+    name = normalize_stage(stage)
+    return name if name in GROUP else "portfolio_manager"
 
 
 ANALYST_GROUPS = ("market", "social", "news", "fundamentals")

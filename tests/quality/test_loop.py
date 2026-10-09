@@ -466,7 +466,8 @@ def test_at_the_cap_the_editor_is_forced_to_submit_instead_of_discarding():
 
         def invoke(self, messages, config=None):
             seen["plain"] += 1
-            seen["warned"] = seen["warned"] or any("round(s) left" in str(m.content) for m in messages)
+            seen["warned"] = seen["warned"] or any("tool round(s) left, then you must call submit_review" in str(m.content)
+                                                     for m in messages)
             return _lookup(seen["plain"])
 
     out = editor.review(Endless(), state(), {"flags": []}, budget_seconds=0, sleep=lambda _s: None)
@@ -691,3 +692,70 @@ def test_calc_refuses_runaway_powers():
         assert editor.calc(expression).startswith("error"), expression
     assert time.monotonic() - started < 1
     assert editor.calc("1.1**12") == "3.13843" and editor.calc("2**-3") == "0.125"
+
+
+# ---- second review of the release fixes (2026-10-09) ----------------------------------------
+
+
+@pytest.mark.unit
+def test_a_digest_finding_without_a_field_closes_on_the_patch_to_its_quote():
+    """A finding needs only stage and quote: one with no field must still
+    close when the patch fixes the text it quotes."""
+    st = {**state(), "report_digest": {"headline": "The company carries no debt", "exit_triggers": ["a close below $6"]}}
+    finding = {"severity": "load_bearing", "location": {"stage": "digest", "quote": "carries no debt"},
+               "problem": "it has notes"}
+    fix = [{"field": "headline", "action": "replace", "value": "Hold: orders are growing"}]
+    graph = FakeGraph([st])
+    final, _ = loop.run_with_quality(graph, "ONDS", "2026-10-05", None,
+                                     review_fn=review_with({"findings": [finding], "digest_patch": fix}))
+    assert final["quality"]["status"] == "clean" and len(graph.calls) == 1
+    # Located by its quote, it is not closed by a patch elsewhere.
+    tidy = [{"field": "exit_triggers[0]", "action": "replace", "value": "A close below support"}]
+    free = {**finding, "location": {"stage": "digest", "field": "headline text", "quote": "carries no debt"}}
+    graph = FakeGraph([{**st}, {**st}])
+    loop.run_with_quality(graph, "ONDS", "2026-10-05", None,
+                          review_fn=review_with({"findings": [free], "digest_patch": tidy}, {}))
+    assert len(graph.calls) == 2
+
+
+@pytest.mark.unit
+def test_a_rejected_item_replacement_deletes_the_right_item():
+    points = [{"title": t, "detail": t.lower()} for t in "ABCD"]
+    digest = {"bull_points": points}
+    bad = "Revenue grew 999% to $123.4B [F:revenue.2026Q2]"
+    facts = editor.Facts(SHEET)
+    out, _ = editor.apply_patch(digest, [{"field": "bull_points[0].detail", "action": "replace", "value": bad},
+                                         {"field": "bull_points[2]", "action": "delete"}], facts)
+    assert [p["title"] for p in out["bull_points"]] == ["B", "D"]
+    out, _ = editor.apply_patch(digest, [{"field": "bull_points[1].title", "action": "replace", "value": bad},
+                                         {"field": "bull_points[1].detail", "action": "replace", "value": "fine"}], facts)
+    assert out["bull_points"] == [points[0], points[2], points[3]]
+
+
+@pytest.mark.unit
+def test_an_unavailable_editor_on_the_revision_holds_the_reviewed_draft():
+    graph = FakeGraph([state(pm="Rating: Hold (first)"), state(pm="Rating: Hold (second)")])
+    final, _ = loop.run_with_quality(
+        graph, "ONDS", "2026-10-05", None,
+        review_fn=review_with({"decision_flags": ["price target not derived"]}, editor.EditorUnavailable("down")))
+    assert final["quality"]["hold_reason"] == "editor_unavailable"
+    assert final["final_trade_decision"] == "Rating: Hold (first)"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stage", ["portfolio_decision", "target_math", "final decision", "price_target",
+                                   "risk_manager", "somewhere odd", ""])
+def test_a_load_bearing_finding_on_the_decision_or_an_unknown_stage_counts(stage):
+    finding = {"severity": "load_bearing", "location": {"stage": stage, "quote": "Target $12"},
+               "problem": "the target math does not reach $12"}
+    graph = FakeGraph([state(), state()])
+    final, _ = loop.run_with_quality(graph, "ONDS", "2026-10-05", None,
+                                     review_fn=review_with({"findings": [finding]}, {}))
+    assert final["quality"]["status"] == "revised" and final["quality"]["passes"][0]["restart"]["from"] == "pm"
+
+
+@pytest.mark.unit
+def test_digest_field_names_map_to_the_digest():
+    for stage in ("ruling", "market_excerpt", "trader_excerpt", "sizing", "conviction_note", "bear_points[2]"):
+        assert errata.normalize_stage(stage) == "digest", stage
+    assert errata.normalize_stage("risk_judge") == "portfolio_manager"

@@ -270,7 +270,7 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None) -> d
             # A round without a tool call still counts; the next one must submit.
             logger.warning("editor: round %d made no tool call; asking for submit_review", round_no)
             messages.append(HumanMessage(content=(
-                f"You made no tool call. Call submit_review now with your review ({left} round(s) left).")))
+                "You made no tool call. Call submit_review now with your review.")))
             must_submit = True
             continue
         for call in calls:
@@ -284,9 +284,11 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None) -> d
                          "detail": str(args.get("expression") if name == "calc" else args.get("key", ""))[:80]})
             messages.append(ToolMessage(content=result, tool_call_id=call["id"]))
         if 0 < left <= FINAL_ROUNDS:
+            # The last round is a forced submit: tool rounds left = left − 1.
+            tools_left = left - 1
             messages.append(HumanMessage(content=(
-                f"{left} tool round(s) left. Finish your checks and call submit_review"
-                + (" on the next round." if left == 1 else " before they run out."))))
+                f"{tools_left} tool round(s) left, then you must call submit_review." if tools_left
+                else "No tool rounds left: call submit_review now with your review.")))
             must_submit = must_submit or left == 1
     # The cap is spent with a full tool history: one forced submission from it
     # rather than discarding the review.
@@ -397,6 +399,50 @@ def patch_location(field) -> str | None:
     return text.lower() if m else None
 
 
+def digest_texts(digest: dict) -> list[tuple[str, str]]:
+    """(path, text) for every patchable text in a digest: "headline",
+    "bull_points[2].detail", "exit_triggers[0]"."""
+    out = []
+    for field in sorted(_PATCHABLE):
+        value = (digest or {}).get(field)
+        if isinstance(value, str):
+            out.append((field, value))
+        elif isinstance(value, list):
+            for i, item in enumerate(value):
+                if isinstance(item, str):
+                    out.append((f"{field}[{i}]", item))
+                elif isinstance(item, dict):
+                    out.extend((f"{field}[{i}].{k}", v) for k, v in item.items() if isinstance(v, str))
+    return out
+
+
+def patched_text(digest: dict, entry: dict) -> str:
+    """The text an applied patch replaced or removed in ``digest`` as written
+    (a deleted item's whole text), for matching findings to patches."""
+    loc = patch_location(entry.get("field"))
+    m = _PATH.match(loc) if loc else None
+    if not m:
+        return ""
+    index = int(m.group("index")) if m.group("index") else None
+    sub = None if entry.get("action") == "delete" else m.group("sub")
+    try:
+        return _text_at(digest, m.group("field"), index, sub)
+    except (IndexError, KeyError, TypeError):
+        return ""
+
+
+def _text_at(digest: dict, field: str, index, sub) -> str:
+    target = (digest or {}).get(field)
+    if index is None:
+        return target if isinstance(target, str) else json.dumps(target, ensure_ascii=False)
+    item = target[int(index)]
+    if sub and isinstance(item, dict):
+        return str(item.get(sub) or "")
+    if isinstance(item, dict):
+        return " ".join(str(v) for v in item.values() if isinstance(v, str))
+    return str(item)
+
+
 def apply_patch(digest: dict, patch: list[dict], facts: Facts) -> tuple[dict, list[dict]]:
     """(patched digest, applied patches). A replacement whose text fails the
     lint (a figure off the sheet, a wrong direction) is not applied: a list
@@ -406,35 +452,34 @@ def apply_patch(digest: dict, patch: list[dict], facts: Facts) -> tuple[dict, li
     The editor's output is model output: a malformed item (a field that isn't
     a path, a list or number where text belongs, an empty replacement) is
     skipped, never applied and never fatal. An empty replacement never blanks
-    a field: deleting is its own action."""
-    out = json.loads(json.dumps(digest or {}))
-    applied = []
-    items = [p for p in _as_list(patch) if isinstance(p, dict) and patch_location(p.get("field"))]
+    a field: deleting is its own action.
 
-    def parts(p: dict):
-        return _PATH.match(patch_location(p.get("field")))
-
-    def order(p: dict):
-        # Indices refer to the digest as written: replacements first, then
-        # deletions from the highest index down, so none shifts another.
-        m_ = parts(p)
-        index = int(m_.group("index")) if m_.group("index") else -1
-        return (p.get("action") == "delete", -index)
-
-    for p in sorted(items, key=order):
-        m = parts(p)
-        field, index, sub = m.group("field"), m.group("index"), m.group("sub")
-        if field not in _PATCHABLE or field not in out:
+    Indices refer to the digest as written. Every patch's final action is
+    resolved first (a rejected list-item replacement becomes a deletion of
+    that item), then replacements land on items that stay, then deletions
+    run from the highest original index down, so none shifts another; a
+    patch to an item being deleted is dropped."""
+    original = digest or {}
+    out = json.loads(json.dumps(original))
+    resolved = []   # (patch, field, index:int|None, sub, action, value, point)
+    for p in _as_list(patch):
+        if not isinstance(p, dict):
             continue
+        loc = patch_location(p.get("field"))
+        if not loc:
+            continue
+        m = _PATH.match(loc)
+        field, index, sub = m.group("field"), m.group("index"), m.group("sub")
+        index = int(index) if index is not None else None
         action = p.get("action")
-        if action not in ("replace", "delete"):
+        if field not in _PATCHABLE or field not in out or action not in ("replace", "delete"):
             continue
         target = out.get(field)
-        value = p.get("value")
-        point = None
+        if index is not None and (not isinstance(target, list) or index >= len(target)):
+            continue
+        value, point = p.get("value"), None
         if action == "replace":
-            whole_point = index is not None and not sub and isinstance(target, list) \
-                and int(index) < len(target) and isinstance(target[int(index)], dict)
+            whole_point = index is not None and not sub and isinstance(target[index], dict)
             point = _patch_point(value) if whole_point else None
             text = " ".join(point.values()) if point else _patch_text(value)
             if text is None or not text.strip():
@@ -451,31 +496,53 @@ def apply_patch(digest: dict, patch: list[dict], facts: Facts) -> tuple[dict, li
             if bad:
                 action = "delete"
             value = text
-        if index is None:
-            if action == "delete":
-                out[field] = [] if isinstance(target, list) else ("" if isinstance(target, str) else None)
-            elif isinstance(target, str) or target is None:
-                out[field] = value
-            else:
+            if action == "replace" and index is None and not (isinstance(target, str) or target is None):
                 continue
-        else:
-            i = int(index)
-            if not isinstance(target, list) or i >= len(target):
-                continue
-            if action == "delete":
-                target.pop(i)
-            elif point is not None:
-                target[i] = {**target[i], **point}
-            elif sub and isinstance(target[i], dict):
-                if sub not in target[i] or isinstance(target[i][sub], str) or target[i][sub] is None:
-                    target[i][sub] = value
-                else:
-                    continue   # not a text field
-            elif isinstance(target[i], str):
-                target[i] = value
-            else:
-                continue
+            if action == "replace" and index is not None and point is None:
+                item = target[index]
+                if sub and isinstance(item, dict):
+                    if sub in item and not (isinstance(item[sub], str) or item[sub] is None):
+                        continue   # not a text field
+                elif not isinstance(item, str):
+                    continue
+        resolved.append((p, field, index, sub, action, value, point))
+
+    field_deleted = {r[1] for r in resolved if r[4] == "delete" and r[2] is None}
+    item_deleted = {(r[1], r[2]) for r in resolved if r[4] == "delete" and r[2] is not None}
+    applied = []
+
+    def record(p, field, index, sub, action):
         applied.append({"field": p.get("field"), "action": action})
+
+    # Replacements, on items and fields that stay.
+    for p, field, index, sub, action, value, point in resolved:
+        if action != "replace" or field in field_deleted or (field, index) in item_deleted:
+            continue
+        if index is None:
+            out[field] = value
+        else:
+            target = out[field]
+            if point is not None:
+                target[index] = {**target[index], **point}
+            elif sub:
+                target[index][sub] = value
+            else:
+                target[index] = value
+        record(p, field, index, sub, action)
+    # Deletions: whole fields, then items from the highest original index down.
+    done = set()
+    for p, field, index, _sub, action, _value, _point in sorted(
+            (r for r in resolved if r[4] == "delete"), key=lambda r: -(r[2] if r[2] is not None else -1)):
+        key = (field, index)
+        if key in done or (index is not None and field in field_deleted):
+            continue
+        done.add(key)
+        target = out.get(field)
+        if index is None:
+            out[field] = [] if isinstance(target, list) else ("" if isinstance(target, str) else None)
+        else:
+            target.pop(index)
+        record(p, field, index, None, action)
     return out, applied
 
 

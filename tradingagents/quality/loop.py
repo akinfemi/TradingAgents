@@ -55,16 +55,40 @@ def _digest_field(finding: dict) -> str | None:
     return None
 
 
-def _patched(field: str | None, applied: list[dict]) -> bool:
-    """True when an applied patch covers ``field``: the same path, or a patch
-    to the whole item or field the finding sits in."""
-    if not field:
-        return False
-    for a in applied:
-        path = editor.patch_location(a.get("field"))
-        if path and (field == path or field.startswith(path + ".") or field.startswith(path + "[")):
+def _covers(path: str, field: str) -> bool:
+    return field == path or field.startswith(path + ".") or field.startswith(path + "[")
+
+
+def _applied_path(a: dict) -> str | None:
+    """An applied patch's path; a deleted list item covers the whole item."""
+    path = editor.patch_location(a.get("field"))
+    if path and a.get("action") == "delete":
+        path = re.sub(r"(\[\d+\])\.\w+$", r"\1", path)
+    return path
+
+
+def _norm_text(text) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"\[F:[^\]]+\]", "", str(text or ""))).strip().lower()
+
+
+def _patched(finding: dict, applied: list[dict], digest: dict) -> bool:
+    """True when an applied patch fixed the digest finding: one to its own
+    field (or the item or field around it). A finding without a parseable
+    field ("bull point 2 detail", or none) is placed by its quote in the
+    digest as written; one whose quote isn't found closes on any applied
+    patch, as before field-level closing."""
+    paths = [p for p in (_applied_path(a) for a in applied) if p]
+    field = _digest_field(finding)
+    if field:
+        return any(_covers(p, field) for p in paths)
+    quote = _norm_text(_location(finding).get("quote"))
+    if quote:
+        if any(quote in _norm_text(editor.patched_text(digest, a)) for a in applied):
             return True
-    return False
+        homes = [path for path, text in editor.digest_texts(digest) if quote in _norm_text(text)]
+        if homes:
+            return any(_covers(p, home) for p in paths for home in homes)
+    return bool(applied)
 
 
 # A decision flag about the call itself re-runs the debate and ruling; one
@@ -105,7 +129,7 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
 
     reviewed: tuple | None = None   # (state, rating) of the last pass the editor reviewed
 
-    def hold_reviewed(attempt: int, exc: Exception) -> None:
+    def hold_reviewed(attempt: int, exc: Exception, reason: str | None = None) -> None:
         """A revision broke down (a crash, the token budget): hold the last
         reviewed draft with its open issues instead of failing a run whose
         report is complete. Nothing more is spent."""
@@ -113,7 +137,7 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
         logger.error("revision %d of %s failed: %s", attempt, ticker, exc, exc_info=True)
         final_state, rating = reviewed
         status = "held"
-        hold_reason = REVISION_OVER_BUDGET if is_budget_exceeded(exc) else REVISION_FAILED
+        hold_reason = reason or (REVISION_OVER_BUDGET if is_budget_exceeded(exc) else REVISION_FAILED)
         passes.append({"pass": attempt, "lint": None, "editor": None,
                        "error": f"{type(exc).__name__}: {exc}"[:300], "relint": passes[-1].get("relint")})
         report("held")
@@ -158,6 +182,10 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
                                on_step=on_step)
         except editor.EditorUnavailable as exc:
             logger.error("editor unavailable for %s: %s", ticker, exc)
+            if reviewed is not None:
+                # A revision the editor couldn't check: hold the reviewed draft.
+                hold_reviewed(attempt, exc, "editor_unavailable")
+                break
             status, hold_reason = "held", "editor_unavailable"
             report("held")
             passes.append({"pass": attempt, "lint": lint, "editor": None, "error": str(exc)[:300]})
@@ -169,6 +197,7 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
                 raise
             hold_reviewed(attempt, exc)
             break
+        digest_before = final_state.get("report_digest") or {}
         try:
             patched, applied = editor.apply_patch(final_state.get("report_digest") or {}, review.get("digest_patch"),
                                                   Facts(final_state.get("fact_sheet")))
@@ -188,12 +217,12 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
         dismissed |= {editor.dismissed_key(d) for d in review.get("lint_dismissed") or []}
         open_flags = [f for f in _load_bearing(relint) if editor.dismissed_key(f) not in dismissed]
         editor_lb = [f for f in review["findings"] if f.get("severity") == "load_bearing"
-                     and errata.normalize_stage(_location(f).get("stage")) in _DECIDING]
+                     and errata.deciding_stage(_location(f).get("stage")) in _DECIDING]
         # Only the ruling, the decision and the digest can force a revision; a
         # digest finding is closed only by an applied patch to its own field
         # (an exit-trigger tidy-up must not close a wrong headline).
         unpatched = [f for f in editor_lb if errata.normalize_stage(_location(f).get("stage")) != "digest"
-                     or not _patched(_digest_field(f), applied)]
+                     or not _patched(f, applied, digest_before)]
         note = review.get("editor_note") or note
         passes.append({"pass": attempt, "lint": lint, "editor": review, "patch_applied": applied,
                        "relint": relint, "open": len(open_flags), "decision_flags": review["decision_flags"]})
