@@ -207,10 +207,66 @@ def judge_grounded(client, run: dict) -> tuple[Judgement, dict]:
     raise RuntimeError("the judge did not submit a judgement")
 
 
-def _judge_cost(usage: dict) -> float:
-    """Input at list price, cache writes at 1.25x, cache reads at 0.1x."""
-    return (usage["tokens_in"] * JUDGE_PRICE[0] + usage.get("cache_write", 0) * JUDGE_PRICE[0] * 1.25
-            + usage.get("cache_read", 0) * JUDGE_PRICE[0] * 0.1 + usage["tokens_out"] * JUDGE_PRICE[1]) / 1e6
+# A second judge from another family, through OpenRouter (2026-10-09): its
+# own family's reports and the other's, to expose self-preference.
+OTHER_JUDGE_PRICES = {"openai/gpt-6.1-sol": (2.00, 10.00)}
+
+
+def judge_grounded_openrouter(model: str, run: dict) -> tuple[Judgement, dict]:
+    """The grounded judgement from a model on OpenRouter (OpenAI-style tools)."""
+    import os
+
+    from openai import OpenAI
+
+    from tradingagents.quality.editor import calc, fact
+    from tradingagents.quality.lint import Facts
+
+    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=os.environ["OPENROUTER_API_KEY"])
+    facts = Facts((run.get("state") or {}).get("fact_sheet"))
+
+    def tool(name, description, parameters):
+        return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
+
+    tools = [
+        tool("fact", "Look up one fact-sheet key, e.g. revenue.2026Q2.",
+             {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]}),
+        tool("calc", "Evaluate an arithmetic expression (numbers, + - * / ** and parentheses).",
+             {"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]}),
+        tool("submit_judgement", "Submit the finished judgement. Call exactly once, last.",
+             _strict_schema(GroundedJudgement.model_json_schema())),
+    ]
+    messages = [{"role": "user", "content": build_prompt(run, grounded=True)}]
+    usage = {"tokens_in": 0, "tokens_out": 0, "cache_read": 0, "cache_write": 0, "rounds": 0, "tool_calls": 0}
+    for _ in range(MAX_TOOL_ROUNDS):
+        resp = client.chat.completions.create(model=model, messages=messages, tools=tools, max_tokens=32000,
+                                              extra_body={"reasoning": {"effort": "high"}})
+        u = resp.usage
+        cached = getattr(getattr(u, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+        usage["tokens_in"] += u.prompt_tokens - cached
+        usage["cache_read"] += cached
+        usage["tokens_out"] += u.completion_tokens
+        usage["rounds"] += 1
+        msg = resp.choices[0].message
+        messages.append(msg.model_dump(exclude_none=True))
+        if not msg.tool_calls:
+            messages.append({"role": "user", "content": "Finish by calling submit_judgement."})
+            continue
+        for call in msg.tool_calls:
+            args = json.loads(call.function.arguments or "{}")
+            if call.function.name == "submit_judgement":
+                return GroundedJudgement.model_validate(args), usage
+            usage["tool_calls"] += 1
+            out = calc(args.get("expression", "")) if call.function.name == "calc" else fact(facts, args.get("key", ""))
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": out})
+    raise RuntimeError("the judge did not submit a judgement")
+
+
+def _judge_cost(usage: dict, model: str = JUDGE_MODEL) -> float:
+    """Input at list price, cache writes at 1.25x, cache reads at 0.1x (an
+    estimate for non-Anthropic judges)."""
+    price = OTHER_JUDGE_PRICES.get(model, JUDGE_PRICE)
+    return (usage["tokens_in"] * price[0] + usage.get("cache_write", 0) * price[0] * 1.25
+            + usage.get("cache_read", 0) * price[0] * 0.1 + usage["tokens_out"] * price[1]) / 1e6
 
 
 def main() -> int:
@@ -223,8 +279,14 @@ def main() -> int:
     )
     parser.add_argument("--grounded", action="store_true",
                         help="give the judge the fact sheet and the fact/calc tools (judgement-grounded*.json)")
+    parser.add_argument("--judge-model", default=JUDGE_MODEL,
+                        help="an OpenRouter model id (e.g. openai/gpt-6.1-sol) for a second, grounded judge")
     args = parser.parse_args()
-    suffix = ("-grounded" if args.grounded else "") + ("" if args.judge_run == 1 else f"-{args.judge_run}")
+    other = args.judge_model != JUDGE_MODEL
+    if other:
+        args.grounded = True
+    suffix = (("-grounded" if args.grounded else "") + (f"-{args.judge_model.split('/')[-1]}" if other else "")
+              + ("" if args.judge_run == 1 else f"-{args.judge_run}"))
     load_env(args.env)
 
     import anthropic
@@ -242,7 +304,10 @@ def main() -> int:
             saved = json.loads(out.read_text(encoding="utf-8"))
         else:
             try:
-                judgement, usage = (judge_grounded if args.grounded else judge_one)(client, run)
+                if other:
+                    judgement, usage = judge_grounded_openrouter(args.judge_model, run)
+                else:
+                    judgement, usage = (judge_grounded if args.grounded else judge_one)(client, run)
             except Exception as exc:  # noqa: BLE001 — record and continue
                 failed.append(run["ticker"])
                 print(f"  {run['ticker']}: judge failed ({exc})", flush=True)
@@ -250,7 +315,7 @@ def main() -> int:
             saved = {"judgement": judgement.model_dump(), "usage": usage}
             out.write_text(json.dumps(saved, indent=1), encoding="utf-8")
         j, usage = saved["judgement"], saved["usage"]
-        cost_j = _judge_cost(usage)
+        cost_j = _judge_cost(usage, args.judge_model)
         cost_p = estimate_cost_usd(run["usage_by_model"]) or 0.0
         judge_cost += cost_j
         pipeline_cost += cost_p
@@ -280,7 +345,7 @@ def main() -> int:
         "judge_run": args.judge_run,
         "date": dt.date.today().isoformat(),
         "settings": json.loads((label_dir / "settings.json").read_text(encoding="utf-8")),
-        "judge_model": JUDGE_MODEL,
+        "judge_model": args.judge_model,
         "reports": n,
         "mean_scores": {c: round(sum(r["scores"][c] for r in rows) / n, 2) for c in CLASSES},
         "mean_score": round(sum(r["mean_score"] for r in rows) / n, 2),
