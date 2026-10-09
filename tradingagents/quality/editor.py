@@ -262,6 +262,8 @@ def review(llm, state: dict, lint_report: dict, earlier_errata: str = "", callba
             logger.warning("editor attempt failed: %s", exc)
             if time.monotonic() - started + delay > budget_seconds:
                 raise EditorUnavailable(f"editor unavailable: {type(last).__name__}: {last}") from last
+            if on_step:
+                on_step({"kind": "retry"})
             sleep(delay)
             delay = min(delay * 2, 120)
 

@@ -401,7 +401,8 @@ def test_the_review_reports_its_progress():
                           on_progress=lambda node, delta, _s: events.append((node, (delta or {}).get("_review"))),
                           review_fn=review_with({"decision_flags": ["price target not derived"]}, {}))
     steps = [r["step"] for node, r in events if node == "Quality Review" and r]
-    assert steps == ["checking", "tool", "revising", "checking", "tool", "passed"]
+    assert steps == ["checking", "tool", "checked", "revising", "checking", "tool", "checked", "passed"]
+    assert next(r for _n, r in events if r and r["step"] == "checked")["facts"] == 1
     revising = next(r for _n, r in events if r and r["step"] == "revising")
     assert revising["restart_from"] == "trader" and revising["corrections"] == 1
     assert next(r for _n, r in events if r and r["step"] == "passed")["status"] == "revised"

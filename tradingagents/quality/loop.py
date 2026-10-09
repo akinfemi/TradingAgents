@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 from tradingagents.quality import editor, errata
 from tradingagents.quality.lint import Facts, lint_state
@@ -78,12 +79,30 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
         lint = (final_state.get("quality") or {}).get("lint") or lint_state(final_state)
         leads = sum(1 for f in lint.get("flags") or [] if f.get("blocking") or f.get("severity") == "load_bearing")
         report("checking", passes=attempt, leads=leads)
+        counts = {"facts": 0, "calcs": 0, "last": 0.0}
+
+        def on_step(ev: dict, counts: dict = counts) -> None:
+            """Tool calls as running totals, at most one event every two
+            seconds: a long review must not crowd the run's event backlog,
+            and a retried attempt restarts the count (code review 2026-10-09)."""
+            if ev.get("kind") == "retry":
+                counts.update(facts=0, calcs=0, last=0.0)
+                report("retrying")
+                return
+            counts["calcs" if ev.get("kind") == "calc" else "facts"] += 1
+            now = time.monotonic()
+            if now - counts["last"] >= 2.0:
+                counts["last"] = now
+                report("tool", kind=ev.get("kind"), detail=ev.get("detail"),
+                       facts=counts["facts"], calcs=counts["calcs"])
+
         try:
             review = review_fn(editor_llm, final_state, lint, errata.render(all_errata), callbacks=callbacks,
-                               on_step=lambda ev: report("tool", **ev))
+                               on_step=on_step)
         except editor.EditorUnavailable as exc:
             logger.error("editor unavailable for %s: %s", ticker, exc)
             status, hold_reason = "held", "editor_unavailable"
+            report("held")
             passes.append({"pass": attempt, "lint": lint, "editor": None, "error": str(exc)[:300]})
             break
         patched, applied = editor.apply_patch(final_state.get("report_digest") or {}, review["digest_patch"],
@@ -109,7 +128,9 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
         if forced and forced.upper() == str(ticker).upper():
             # Staging test hook: exercise the hold and release path.
             status, hold_reason = "held", "forced hold for testing (quality_force_hold_ticker)"
+            report("held")
             break
+        report("checked", facts=counts["facts"], calcs=counts["calcs"])
         if applied:
             report("patched", fields=len(applied))
         if not open_flags and not review["decision_flags"] and not unpatched:
