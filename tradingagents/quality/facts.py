@@ -323,8 +323,16 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
         add("market_cap", mcap, "usd", "market_cap",
             f"cover-page shares ({st.cover_shares_date}) × close ({price_date})", price_date)
         debt = (v("debt", end) or 0) + (v("debt_current", end) or 0)
-        debt_note = "" if v("debt", end) is not None or v("debt_current", end) is not None else \
-            f"; no debt tagged at {end}, counted as 0"
+        debt_note = ""
+        if v("debt", end) is None and v("debt_current", end) is None:
+            parts = {c: v(c, end) for c in _DEBT_PARTS if v(c, end) is not None}
+            if parts:
+                debt = sum(parts.values())
+                add(f"debt_total.{cal}", debt, "usd", "debt_total",
+                    "sum of " + ", ".join(_DEBT_PARTS[c] for c in parts) + " (no total-debt tag filed)", f"at {end}")
+                debt_note = f"; debt is the sum of the instruments filed at {end} [debt_total.{cal}]"
+            else:
+                debt_note = f"; no debt tagged at {end}, counted as 0"
         if cash_sti is not None:
             ev = mcap - cash_sti + debt
             add("ev", ev, "usd", "enterprise_value",
@@ -666,6 +674,10 @@ def _fmt(f: Fact) -> str:
     return f"{v:,.4g}" if isinstance(v, float) else str(v)
 
 
+# Debt filed by instrument (edgar_ext.LINES), summed only when no total is tagged.
+_DEBT_PARTS = {"notes_payable": "notes payable", "loans_payable": "loans payable", "secured_debt": "secured debt",
+               "commercial_paper": "commercial paper", "credit_line": "credit-line borrowings"}
+
 _ROWS = [
     ("revenue", "Revenue"), ("revenue_yoy", "Revenue YoY"), ("gross_profit", "Gross profit"),
     ("gross_margin", "Gross margin"), ("sga", "SG&A"), ("ga", "G&A"), ("sm", "Sales & marketing"),
@@ -683,7 +695,9 @@ _ROWS = [
 _LINE_ITEMS = {concept for concept, _kind, _tags in edgar_ext.LINES}
 _BALANCE_ROWS = [
     ("cash", "Cash"), ("sti", "Short-term investments"), ("cash_sti", "Cash + short-term investments"),
-    ("debt", "Long-term debt"), ("debt_current", "Current debt"), ("derivative_liabilities", "Derivative liabilities"),
+    ("debt", "Long-term debt"), ("debt_current", "Current debt"), ("notes_payable", "Notes payable"),
+    ("loans_payable", "Loans payable"), ("secured_debt", "Secured debt"), ("commercial_paper", "Commercial paper"),
+    ("credit_line", "Credit-line borrowings"), ("debt_total", "Debt, summed from instruments"), ("derivative_liabilities", "Derivative liabilities"),
     ("goodwill", "Goodwill"), ("intangibles", "Intangibles"), ("goodwill_intangibles", "Goodwill + intangibles"),
     ("liabilities", "Total liabilities"), ("equity", "Stockholders' equity"),
     ("tangible_equity", "Tangible equity (equity − goodwill − intangibles)"),

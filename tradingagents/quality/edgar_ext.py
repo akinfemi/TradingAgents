@@ -64,6 +64,14 @@ LINES: list[tuple[str, str, tuple[str, ...]]] = [
                       "MarketableSecuritiesCurrent", "DebtSecuritiesCurrent")),
     ("debt", "stock", ("LongTermDebt", "LongTermDebtNoncurrent", "DebtInstrumentCarryingAmount")),
     ("debt_current", "stock", ("LongTermDebtCurrent", "DebtCurrent")),
+    # Debt filed by instrument instead of as a total (REITs: Realty Income
+    # tags NotesPayable, LoansPayable, CommercialPaper; eval 2026-10-09).
+    # Used only when no total above is tagged, so never double counted.
+    ("notes_payable", "stock", ("NotesPayable", "SeniorNotes", "UnsecuredDebt")),
+    ("loans_payable", "stock", ("LoansPayable",)),
+    ("secured_debt", "stock", ("SecuredDebt",)),
+    ("commercial_paper", "stock", ("CommercialPaper",)),
+    ("credit_line", "stock", ("LineOfCredit", "LongTermLineOfCredit")),
     ("derivative_liabilities", "stock", ("DerivativeLiabilities", "DerivativeLiabilitiesNoncurrent")),
     ("goodwill", "stock", ("Goodwill",)),
     ("intangibles", "stock", ("FiniteLivedIntangibleAssetsNet", "IntangibleAssetsNetExcludingGoodwill")),

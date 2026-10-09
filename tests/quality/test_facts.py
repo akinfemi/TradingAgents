@@ -331,3 +331,23 @@ def test_tangible_equity_is_on_the_sheet(onds):
     assert onds.value("goodwill_intangibles.2026Q2") == pytest.approx(gw + intang)
     assert onds.value("tangible_equity.2026Q2") == pytest.approx(eq - gw - intang)
     assert "Tangible equity (equity − goodwill − intangibles) [tangible_equity]" in facts.render(onds)
+
+
+@pytest.mark.unit
+def test_debt_filed_by_instrument_is_summed_into_ev():
+    """Realty Income files no total-debt tag; its notes, loans and commercial
+    paper (~$29.3B at 2026Q2) were counted as zero debt (eval 2026-10-09)."""
+    st = edgar_ext.from_json("0000726728", json.loads((FIX / "o_companyfacts.json").read_text()),
+                             json.loads((FIX / "o_submissions.json").read_text()), "2026-10-09")
+    days = pd.date_range("2025-09-01", periods=280, freq="B").strftime("%Y-%m-%d")
+    ohlcv = pd.DataFrame({"Date": days, "Open": 54.0, "High": 55.0, "Low": 53.0, "Close": 54.17, "Volume": 1e6})
+    sheet = facts.build("O", "2026-10-09", "2026-10-09T14:00:00Z", statements=st, ohlcv=ohlcv, offline=True)
+    assert 29_000 < _m(sheet, "debt_total.2026Q2") < 29_500
+    ev = sheet.value("ev")
+    assert ev == pytest.approx(sheet.value("market_cap") - sheet.value("cash_sti.2026Q2") + sheet.value("debt_total.2026Q2"))
+    assert "no debt tagged" not in sheet.get("ev").derivation
+
+
+@pytest.mark.unit
+def test_a_debt_total_tag_is_never_summed_with_instruments(onds):
+    assert onds.get("debt_total.2026Q2") is None
