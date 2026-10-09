@@ -339,3 +339,19 @@ def test_a_review_that_breaks_the_schema_is_retried():
     finally:
         ed._run_once = orig
     assert out["findings"][0]["problem"] == "p" and not replies
+
+
+@pytest.mark.unit
+def test_a_digest_patch_with_review_vocabulary_is_rejected():
+    digest = {"headline": "Underweight: quality verified, but spending is outrunning cash conversion",
+              "bull_points": [{"title": "Cash", "detail": "FCF covers capex."}]}
+    patch = [{"field": "headline", "action": "replace",
+              "value": "Underweight: verified quality, but spending outruns cash conversion"},
+             {"field": "bull_points[0].detail", "action": "replace", "value": "FCF covers capex (per errata E2)."}]
+    out, applied = editor.apply_patch(digest, patch, editor.Facts(SHEET))
+    assert out["headline"] == "" and out["bull_points"] == []
+    assert [a["action"] for a in applied] == ["delete", "delete"]
+    fixed, _ = editor.apply_patch(digest, [{"field": "headline", "action": "replace",
+                                             "value": "Underweight: spending is outrunning cash conversion"}],
+                                  editor.Facts(SHEET))
+    assert fixed["headline"] == "Underweight: spending is outrunning cash conversion"

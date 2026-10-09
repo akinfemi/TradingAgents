@@ -234,3 +234,45 @@ def test_two_figures_in_one_sentence_are_one_finding(sheet):
     state = {"fact_sheet": sheet.sheet, "investment_plan": "Orders of $165M and $56M support the call."}
     flags = [f for f in lint_state(state)["flags"] if f["kind"] == "unsupported"]
     assert len(flags) == 1
+
+
+# ---- review vocabulary in the digest (MSFT, 2026-10-09) ------------------------------------
+
+MSFT_HEADLINE = "Underweight: quality verified, but spending is outrunning cash conversion"
+
+
+def process_flags(text, field="digest.headline", stage="digest"):
+    return [f for f in lint_text(text, Facts(None), stage, field) if f.kind == "process_language"]
+
+
+@pytest.mark.unit
+def test_review_vocabulary_in_the_digest_headline_is_flagged():
+    flags = process_flags(MSFT_HEADLINE)
+    assert len(flags) == 1 and flags[0].blocking and flags[0].severity == "load_bearing"
+    for text in ("Hold: margins corrected per errata E5", "Buy: the fact sheet shows net cash",
+                 "Sell: unverified partnership claims", "Hold: the previous draft overstated FCF",
+                 "Hold: lint-clean figures", "Hold: as fixed in E12"):
+        assert process_flags(text, "digest.bull_thesis"), text
+
+
+@pytest.mark.unit
+def test_normal_digest_prose_is_not_flagged():
+    for text in (
+        "Overweight: operating strength outweighs capex risk",
+        "Hold: the FDA review of the lead asset is due in Q1; revision of guidance is possible",
+        "Underweight: spending is outrunning cash conversion; EPS fell 4% and EBITDA margin narrowed",
+        "Exit if quarterly FCF falls below $20B; currently $24.6B",
+    ):
+        assert process_flags(text) == [], text
+
+
+@pytest.mark.unit
+def test_research_manager_labels_are_not_flagged_outside_the_digest():
+    text = "**Verified** (derived): FCF of $24.6B covers capex. The unverified news claim is excluded (errata E5)."
+    assert process_flags(text, field="rm", stage="research_manager") == []
+    state = {"fact_sheet": {"facts": []}, "investment_plan": text,
+             "report_digest": {"headline": "Hold: fine",
+                               "bull_points": [{"title": "Cash", "detail": "Verified FCF covers capex."}]}}
+    flags = [f for f in lint_state(state)["flags"] if f["kind"] == "process_language"]
+    assert [(f["stage"], f["field"]) for f in flags] == [("digest", "digest.bull_points")]
+    assert flags[0]["severity"] == "load_bearing" and flags[0]["blocking"]

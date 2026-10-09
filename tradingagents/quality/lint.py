@@ -14,7 +14,9 @@ Checks (numbered as in the plan):
    in that report;
 6. plan coherence: the target's side of the price agrees with the rating;
 7. sanitiser and data policy: emoji, sign-offs, truncated fields, and
-   data the platform may not use (short interest, consensus, targets).
+   data the platform may not use (short interest, consensus, targets),
+   and review vocabulary ("verified", "errata", "fact sheet") in the
+   reader-facing digest.
 
 Severity: ``load_bearing`` when the location is load-bearing (the
 headline, the PM's summary or thesis, the RM ruling, bull and bear key
@@ -34,7 +36,7 @@ from difflib import SequenceMatcher
 
 BLOCKING_KINDS = {"cited_mismatch", "unknown_key", "direction", "misattributed", "arithmetic",
                   "period_mismatch", "concept_mismatch", "data_policy", "target_direction", "target_math",
-                  "target_range", "social_claim"}
+                  "target_range", "social_claim", "process_language"}
 
 LOAD_BEARING_FIELDS = {
     "digest.headline", "digest.bull_thesis", "digest.bear_thesis", "digest.ruling",
@@ -604,6 +606,46 @@ def check_style(text: str, stage: str, field_name: str) -> list[LintFlag]:
     return flags
 
 
+# The review's own vocabulary in reader text (MSFT, 2026-10-09: the RM's
+# "Verified (derived)" labels became a digest headline, "quality verified",
+# which a reader takes for the platform's Verified badge). The stages'
+# adjudication labels are for the record; the digest states the substance.
+# Bare "review" is ordinary prose and is not flagged.
+_PROCESS = re.compile(r"\b(?:un)?verified\b|\berrat(?:a|um)\b|\blint\b|\bfact[\s-]sheets?\b|"
+                      r"\bprevious\s+draft\b", re.I)
+_ERRATUM_ID = re.compile(r"\bE\d{1,2}\b")  # "per errata E5"; case-sensitive
+
+
+def check_process_language(text: str, stage: str, field_name: str) -> list[LintFlag]:
+    """Review and process vocabulary in a digest field. Always load-bearing:
+    the digest is what the reader sees. Other stages legitimately label their
+    claims ("Verified (derived)") and are not checked."""
+    if not field_name.startswith("digest") or not text:
+        return []
+    flags: list[LintFlag] = []
+    seen: set[str] = set()
+    for rx in (_PROCESS, _ERRATUM_ID):
+        for m in rx.finditer(text):
+            sentence = _sentence_at(text, m.start(), m.end())
+            if sentence in seen:
+                continue
+            seen.add(sentence)
+            flags.append(LintFlag("load_bearing", "process_language", stage, field_name, sentence[:300],
+                                  f"review vocabulary ('{m.group(0)}') in reader text: state the substance, "
+                                  "not the review's labels"))
+    return flags
+
+
+def _digest_strings(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _digest_strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _digest_strings(v)]
+    return []
+
+
 def check_target(decision: dict | None, facts: Facts) -> list[LintFlag]:
     """Check 6 (part): the target sits on the rating's side of the price."""
     if not decision:
@@ -648,6 +690,7 @@ def lint_text(text: str, facts: Facts, stage: str, field_name: str,
         *check_provenance(text, sources or {}, stage, field_name),
         *check_policy(text, stage, field_name),
         *check_style(text, stage, field_name),
+        *check_process_language(text, stage, field_name),
     ]
     if field_name in LOAD_BEARING_FIELDS:
         flags.extend(unsupported_figures(text, facts, stage, field_name))
@@ -698,6 +741,13 @@ def lint_state(state: dict) -> dict:
         # An analyst's own report is not checked against itself for provenance.
         own = {k: v for k, v in sources.items() if not stage.startswith(k)}
         flags.extend(lint_text(text, facts, stage, field_name, own))
+    # Process language in the digest fields the full lint does not cover
+    # (points, excerpts, risk lenses, sizing...).
+    linted = {f for _, f, _ in stage_texts(state)}
+    for key, value in (state.get("report_digest") or {}).items():
+        if f"digest.{key}" not in linted:
+            for text in _digest_strings(value):
+                flags.extend(check_process_language(text, "digest", f"digest.{key}"))
     flags.extend(check_target(state.get("portfolio_decision"), facts))
     # Two figures in one sentence are one finding, not two.
     unique: dict[tuple, LintFlag] = {}

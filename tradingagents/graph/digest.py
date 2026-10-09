@@ -121,6 +121,16 @@ def build_digest_prompt(final_state: dict, computed_context: str | None = None) 
         "the argument is, not which agent made it.",
         "- No emoji, no rhetorical questions, no sign-offs ('Will the bull "
         "respond?'). Plain declarative sentences.",
+        # MSFT, 2026-10-09: the research manager's "Verified (derived)"
+        # labels became a headline ("quality verified"), which a reader
+        # takes for the platform's Verified badge.
+        "- Reader text never uses the pipeline's review vocabulary: "
+        "'verified'/'unverified', 'errata', 'lint', 'fact sheet', the "
+        "report's 'review' or 'revision', 'previous draft', or fact-key "
+        "citations like [F:…]. The stages' adjudication labels ('Verified "
+        "(derived)', 'unverified') are for the record, not the reader; state "
+        "the substance instead ('free cash flow covers capex 1.4x', not "
+        "'quality verified').",
         "- Each exit-trigger detail is one sentence of at most 240 "
         "characters; never end a field mid-thought.",
         # R7: each field has one job, and nothing repeats.
