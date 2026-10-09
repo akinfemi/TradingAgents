@@ -289,3 +289,18 @@ def test_target_math_with_bear_and_bull_cases_after_the_base(sheet):
     assert [f.kind for f in check_target(decision, sheet) if f.kind == "target_math"] == []
     wrong = {**decision, "price_target": round(target * 0.95, 2)}
     assert [f.kind for f in check_target(wrong, sheet) if f.kind == "target_math"] == ["target_math"]
+
+
+@pytest.mark.unit
+def test_chained_valuation_math_is_supported(sheet):
+    """Eval 2026-10-09 (GPT deep tier, NVDA): annualised revenue derived once,
+    then reused in the bear and bull cases."""
+    q = sheet.value("revenue.2026Q2")
+    ann = 4 * q
+    text = (f"Annualized revenue = 4 × ${q / 1e6:,.1f}M [F:revenue.2026Q2] = ${ann / 1e6:,.1f}M. "
+            f"Base assumed 16x: 16 × ${ann / 1e6:,.1f}M = ${16 * ann / 1e6:,.1f}M EV. "
+            + "Reasoning about margins, dilution and the cash runway fills this gap between the cases. " * 4
+            + f"Bear assumed 12x: 12 × ${ann / 1e6:,.1f}M = ${12 * ann / 1e6:,.1f}M EV.")
+    flags = [f for f in lint_text(text, sheet, "portfolio_manager", "pm") if f.kind == "unsupported"]
+    assert flags == [], [f.quote for f in flags]
+    assert [f.kind for f in lint_text("Backlog of $912.0M supports the call.", sheet, "portfolio_manager", "pm")] == ["unsupported"]

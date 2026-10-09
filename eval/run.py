@@ -10,6 +10,7 @@ skipped, so an interrupted evaluation resumes where it stopped.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import sys
 import time
@@ -110,10 +111,14 @@ def main() -> int:
     parser.add_argument("--env", help="env file with keys and model settings")
     parser.add_argument("--tickers", help="comma-separated subset of the golden set")
     parser.add_argument("--concurrency", type=int, default=3)
+    parser.add_argument("--trade-date", help="override the golden set's date; 'today' runs as production does "
+                                             "(a past date against today's clock confuses the session note)")
     args = parser.parse_args()
 
     settings = load_env(args.env)
     gs = golden_set()
+    if args.trade_date:
+        gs["trade_date"] = dt.date.today().isoformat() if args.trade_date == "today" else args.trade_date
     wanted = {t.strip().upper() for t in args.tickers.split(",")} if args.tickers else None
     tickers = [t["ticker"] for t in gs["tickers"] if not wanted or t["ticker"] in wanted]
     base = platform_config()

@@ -278,8 +278,15 @@ def _context_values(text: str, fig: Figure, facts: Facts) -> list[float]:
     return _sentence_values(fig.sentence, facts, fig.kind, fig) + nearest_first + cited
 
 
+# A bare multiplier beside a times sign ("4 × $96.22B", "16 × $384.88B"):
+# annualising a quarter, or applying a multiple written without its "x".
+_BARE_MULTIPLIER = re.compile(r"(?<![\w.$])(\d{1,3}(?:\.\d+)?)\s*[×*]|[×*]\s*(\d{1,3}(?:\.\d+)?)(?![\d.,]*\s*[%$BMKbmk])")
+
+
 def _multiples(context: str) -> list[float]:
-    return [g.value for g in figures(context) if g.kind == "x"]
+    out = [g.value for g in figures(context) if g.kind == "x"]
+    out += [float(a or b) for a, b in _BARE_MULTIPLIER.findall(context)]
+    return out
 
 
 def _sentence_values(sentence: str, facts: Facts, kind: str, exclude: Figure | None = None) -> list[float]:
@@ -382,17 +389,26 @@ def unsupported_figures(text: str, facts: Facts, stage: str, field_name: str) ->
     load-bearing in load-bearing places."""
     flags: list[LintFlag] = []
     numeric = list(facts.numeric())
+    # Money figures already established earlier in this text (cited, on the
+    # sheet or derived): a figure derived once and reused below ("annualised
+    # revenue $384.88B" in the base, bear and bull cases) is not re-derived.
+    established: list[float] = []
     for fig in figures(text):
-        if fig.keys or fig.kind != "usd" or abs(fig.value) < 1e6:
+        if fig.kind != "usd":
             continue
-        if any(_matches_fact(fig, f) for f in numeric):
+        if fig.keys:
+            established.append(fig.value)
+            continue
+        if abs(fig.value) < 1e6:
+            continue
+        if (any(_matches_fact(fig, f) for f in numeric)
+                or any(_matches_value(fig, v) for v in established)
+                or _derivable(fig, _context_values(text, fig, facts),
+                              _multiples(text[max(0, fig.start - 300): fig.end + 60]))
+                or (_SUMS_PERIODS.search(fig.sentence) and _period_sum(fig, facts))):
+            established.append(fig.value)
             continue
         if _LABELLED_UNVERIFIED.search(fig.sentence):
-            continue
-        if _SUMS_PERIODS.search(fig.sentence) and _period_sum(fig, facts):
-            continue
-        if _derivable(fig, _context_values(text, fig, facts),
-                      _multiples(text[max(0, fig.start - 300): fig.end + 60])):
             continue
         flags.append(LintFlag(_severity(field_name, "unsupported"), "unsupported", stage, field_name,
                               fig.sentence[:300], "not on the fact sheet and not cited"))
