@@ -18,6 +18,7 @@ so that:
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Literal
 
@@ -56,6 +57,41 @@ def _coerce_optional_float(value):
         return float(cleaned)
     except ValueError:
         return None
+
+
+def _coerce_str_list(value):
+    """A list-of-strings field as a list: models send None, one
+    comma-separated string, or a JSON-ish list with non-string items, and a
+    failed list would discard the whole structured decision."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip().strip("[]")
+        return [part.strip().strip("'\"` ") for part in re.split(r"[,;\n]", text) if part.strip().strip("'\"` ")]
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if v is not None and str(v).strip()]
+    return [str(value)]
+
+
+def _coerce_text(value):
+    """A free-text field given as a number or a list (seen from weaker
+    tiers): a number becomes its text, a list its items joined. None stays None."""
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "; ".join(str(v) for v in value if v is not None)
+    if isinstance(value, (int, float)):
+        return str(value)
+    return value
+
+
+def _coerce_enum(value, enum):
+    """An enum field matched without regard to case, markdown or trailing
+    punctuation ("**buy**", "BUY.", " Hold ")."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip().strip("*_`'\" .:").lower()
+    return next((member.value for member in enum if member.value.lower() == text), value)
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +163,17 @@ class ResearchPlan(BaseModel):
     )
 
 
+    @field_validator("recommendation", mode="before")
+    @classmethod
+    def _rating_any_case(cls, v):
+        return _coerce_enum(v, PortfolioRating)
+
+    @field_validator("rationale", "strategic_actions", mode="before")
+    @classmethod
+    def _text(cls, v):
+        return _coerce_text(v)
+
+
 def render_research_plan(plan: ResearchPlan) -> str:
     """Render a ResearchPlan to markdown for storage and the trader's prompt context."""
     return "\n".join([
@@ -186,6 +233,16 @@ class TraderProposal(BaseModel):
     @classmethod
     def _nullish_float_to_none(cls, v):
         return _coerce_optional_float(v)
+
+    @field_validator("action", mode="before")
+    @classmethod
+    def _action_any_case(cls, v):
+        return _coerce_enum(v, TraderAction)
+
+    @field_validator("reasoning", "position_sizing", mode="before")
+    @classmethod
+    def _text(cls, v):
+        return _coerce_text(v)
 
 
 def render_trader_proposal(proposal: TraderProposal) -> str:
@@ -302,6 +359,24 @@ class PortfolioDecision(BaseModel):
     @classmethod
     def _nullish_float_to_none(cls, v):
         return _coerce_optional_float(v)
+
+    @field_validator("valuation_inputs", mode="before")
+    @classmethod
+    def _inputs_as_list(cls, v):
+        # None or "ev_sales.ttm, ttm_revenue.2026Q2" failed validation and
+        # dropped the whole decision to free text.
+        return _coerce_str_list(v)
+
+    @field_validator("rating", mode="before")
+    @classmethod
+    def _rating_any_case(cls, v):
+        return _coerce_enum(v, PortfolioRating)
+
+    @field_validator("executive_summary", "investment_thesis", "valuation_method", "target_math",
+                     "execution_timing", "time_horizon", mode="before")
+    @classmethod
+    def _text(cls, v):
+        return _coerce_text(v)
 
 
 def render_pm_decision(decision: PortfolioDecision, rating_horizon: str | None = None) -> str:

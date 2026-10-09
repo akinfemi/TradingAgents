@@ -145,15 +145,21 @@ def create_sentiment_analyst(llm):
         if social_sample is not None:
             # Rules 1, 2 and 4 (R7), in code: whole-number score, or none on
             # an insufficient sample; the coverage stated first.
-            structured = social.apply(structured or {}, social_sample)
-            header = (f"**Overall Sentiment:** insufficient data ({structured['insufficient_reason']})"
-                      if structured.get("insufficient_reason") else None)
+            ruled = social.apply(structured or {}, social_sample)
+            # The reason reads "insufficient data: …" already.
+            header = (f"**Overall Sentiment:** {ruled['insufficient_reason']}"
+                      if ruled.get("insufficient_reason") else None)
             lines = report_text.split("\n")
             if header and lines and lines[0].startswith("**Overall Sentiment:**"):
                 lines[0] = header
-            elif structured.get("overall_score") is not None and lines and lines[0].startswith("**Overall Sentiment:**"):
-                lines[0] = re.sub(r"\(Score: [\d.]+/10\)", f"(Score: {structured['overall_score']}/10)", lines[0])
-            report_text = f"**Sample:** {structured['coverage']}.\n" + "\n".join(lines)
+            elif ruled.get("overall_score") is not None and lines and lines[0].startswith("**Overall Sentiment:**"):
+                lines[0] = re.sub(r"\(Score: [\d.]+/10\)", f"(Score: {ruled['overall_score']}/10)", lines[0])
+            report_text = f"**Sample:** {ruled['coverage']}.\n" + "\n".join(lines)
+            # Nothing parsed and a sample big enough to score: there is no
+            # typed read (a {sample, coverage} block without a score would show
+            # an empty gauge). An insufficient sample is the code's own verdict
+            # and is kept either way.
+            structured = ruled if structured is not None or header else None
 
         return {
             "messages": [AIMessage(content=report_text)],
