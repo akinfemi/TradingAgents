@@ -201,6 +201,16 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None) -> dict:
     raise RuntimeError("the editor did not submit a review")
 
 
+def _as_list(value) -> list:
+    """A list field as a list: some models send it JSON-encoded."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return [value] if value.strip() else []
+    return value if isinstance(value, list) else []
+
+
 def _resolve_dismissals(raw, flags: list[dict]) -> list[dict]:
     """The editor's dismissals as the flags they name (kind, stage, field,
     quote) with its reason; an unknown id is ignored."""
@@ -228,7 +238,12 @@ def review(llm, state: dict, lint_report: dict, earlier_errata: str = "", callba
         try:
             out = _run_once(llm, prompt, facts, callbacks)
             for key in ("findings", "digest_patch", "decision_flags"):
-                out[key] = out.get(key) or []
+                out[key] = _as_list(out.get(key))
+            # A review that breaks the schema is a failed attempt, retried
+            # (eval 2026-10-09: Kimi K3 returned findings as strings).
+            if not all(isinstance(f, dict) for f in out["findings"] + out["digest_patch"]):
+                raise ValueError("the editor's review does not match the schema")
+            out["decision_flags"] = [str(f) for f in out["decision_flags"]]
             out["editor_note"] = (out.get("editor_note") or "").strip()
             out["hold_reason"] = (out.get("hold_reason") or "").strip()
             out["lint_dismissed"] = _resolve_dismissals(out.get("lint_dismissed"), prompt_flags(lint_report))

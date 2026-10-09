@@ -324,3 +324,18 @@ def test_the_editor_can_run_on_another_provider(monkeypatch):
     assert seen["base_url"] is None and seen["reasoning_effort"] == "medium" and "effort" not in seen
     editor.create_editor_llm({**config, "editor_provider": None, "editor_llm": "claude-sonnet-5-5"})
     assert seen["provider"] == "anthropic" and seen["base_url"] == "https://proxy" and seen["effort"] == "medium"
+
+
+@pytest.mark.unit
+def test_a_review_that_breaks_the_schema_is_retried():
+    replies = [{"findings": ["a string, not a finding"], "digest_patch": [], "decision_flags": []},
+               {"findings": '[{"severity": "minor", "location": {"stage": "pm", "quote": "q"}, "problem": "p"}]',
+                "digest_patch": [], "decision_flags": [], "editor_note": "", "hold_reason": ""}]
+    import tradingagents.quality.editor as ed
+    orig = ed._run_once
+    ed._run_once = lambda *a, **k: replies.pop(0)
+    try:
+        out = ed.review(None, {"fact_sheet": SHEET}, {"flags": []}, sleep=lambda _s: None)
+    finally:
+        ed._run_once = orig
+    assert out["findings"][0]["problem"] == "p" and not replies
