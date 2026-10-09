@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+from tradingagents.budget import reraise_if_budget
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.market import get_closes
 
@@ -144,6 +145,7 @@ def settle_pending(ticker: str, memory_log, reflector, config: dict, wait: bool 
                     holding_days=days,
                 )
             except Exception as exc:
+                reraise_if_budget(exc)   # past the run's token budget nothing more is spent
                 # Reflection calls a provider: a transient failure leaves the entry
                 # pending for the next pass rather than stopping the analysis.
                 logger.warning("Reflection failed for %s on %s: %s", ticker, entry["date"], exc)

@@ -139,3 +139,84 @@ def test_streaming_keeps_every_gate_record():
     assert [g["stage"] for g in final["quality_gates"]] == ["market", "bear", "pm"]
     assert [e["stage"] for e in final["open_errata"]] == ["market"]
     assert final["final_trade_decision"] == "x"
+
+
+class RunBudgetExceeded(RuntimeError):
+    """The worker's token-cap error (server/worker/token_cap.py), matched by name."""
+
+
+class OverBudgetLLM:
+    calls = 0
+
+    def invoke(self, *_a, **_k):
+        OverBudgetLLM.calls += 1
+        raise RunBudgetExceeded("Run stopped at 3,060,000 tokens, over its budget of 3,000,000")
+
+    def with_structured_output(self, _schema):
+        return self
+
+
+@pytest.mark.unit
+def test_a_gate_does_not_swallow_the_runs_token_budget(state):
+    """Release review 2026-10-09: a gate's broad except turned the budget stop
+    into "gate failed" and the run went on spending."""
+    with pytest.raises(RunBudgetExceeded):
+        gates.analyst_check("market_report", "market_analyst", OverBudgetLLM(), "")({**state, "market_report": WRONG})
+    # Any other failure still never fails the run.
+    out = gates.analyst_check("market_report", "market_analyst", FakeLLM(None), "")({**state, "market_report": WRONG})
+    assert out["quality_gates"][0]["error"]
+
+
+@pytest.mark.unit
+def test_structured_output_does_not_fall_back_past_the_budget():
+    from tradingagents.agents.structured import invoke_structured, invoke_structured_or_freetext
+
+    with pytest.raises(RunBudgetExceeded):
+        invoke_structured(OverBudgetLLM(), "prompt", "Trader")
+    OverBudgetLLM.calls = 0
+    with pytest.raises(RunBudgetExceeded):
+        invoke_structured_or_freetext(OverBudgetLLM(), OverBudgetLLM(), "prompt", str, "Trader")
+    assert OverBudgetLLM.calls == 1   # no free-text retry
+
+    class Broken:
+        def invoke(self, _p):
+            raise ValueError("malformed JSON")
+
+    assert invoke_structured(Broken(), "prompt", "Trader") is None
+
+
+@pytest.mark.unit
+def test_the_digest_and_the_fact_sheet_do_not_swallow_the_budget(monkeypatch):
+    from tradingagents.graph.digest import generate_report_digest
+    from tradingagents.graph.trading_graph import TradingAgentsGraph
+
+    OverBudgetLLM.calls = 0
+    with pytest.raises(RunBudgetExceeded):
+        generate_report_digest(OverBudgetLLM(), {"company_of_interest": "ONDS", "trade_date": "2026-10-05"})
+    assert OverBudgetLLM.calls == 1   # not retried
+
+    def over(*_a, **_k):
+        raise RunBudgetExceeded("over")
+
+    monkeypatch.setattr(facts, "build", over)
+    graph = TradingAgentsGraph.__new__(TradingAgentsGraph)
+    graph.config = {"fact_sheet": True}
+    with pytest.raises(RunBudgetExceeded):
+        graph.build_fact_sheet("ONDS", "2026-10-05")
+    monkeypatch.setattr(facts, "build", lambda *_a, **_k: (_ for _ in ()).throw(ValueError("sec down")))
+    assert graph.build_fact_sheet("ONDS", "2026-10-05") == (None, "")
+
+
+@pytest.mark.unit
+def test_the_business_description_does_not_swallow_the_budget(monkeypatch):
+    monkeypatch.setattr(edgar_ext, "latest_annual_report", lambda *_a: {"accn": "x-budget-test", "filed": "2026-02-01"})
+    monkeypatch.setattr(edgar_ext, "fetch_item1", lambda *_a: "Item 1. Business.")
+    monkeypatch.setattr("tradingagents.dataflows.config.get_config", lambda: {"data_cache_dir": "/nonexistent-cache"})
+    sheet = facts.FactSheet(ticker="ONDS", trade_date="2026-10-05", built_at="x")
+    st = edgar_ext.Statements(cik="1", as_of="2026-10-05", fy_end=None, quarter_ends=[], year_ends=[])
+
+    def over(_prompt):
+        raise RunBudgetExceeded("over")
+
+    with pytest.raises(RunBudgetExceeded):
+        facts._describe_business(sheet, st, "2026-10-05", over)

@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
+from tradingagents.budget import reraise_if_budget
 from tradingagents.quality.lint import Facts, LintFlag, lint_text
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,8 @@ def check_and_fix(text: str, state: dict, stage: str, field_name: str, llm=None,
         remaining = [f for f in lint_text(fixed, facts, stage, field_name, sources) if f.blocking]
         record.update(fixed=True, flags_after=len(remaining))
         return fixed, errata_entries(remaining), record
-    except Exception as exc:  # noqa: BLE001 — a gate never fails the run
+    except Exception as exc:  # noqa: BLE001 — a gate never fails the run…
+        reraise_if_budget(exc)   # …but the run's token budget stops it
         logger.warning("gate %s failed: %s", stage, exc, exc_info=True)
         record["error"] = type(exc).__name__
         return text, [], record

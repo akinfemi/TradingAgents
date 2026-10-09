@@ -18,6 +18,7 @@ from typing import Any
 
 from tradingagents.agents.schemas import ReportDigest
 from tradingagents.agents.structured import bind_structured
+from tradingagents.budget import reraise_if_budget
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,7 @@ def generate_report_digest(
             if result is None:
                 raise ValueError("structured output returned no parsed result")
             return result.model_dump(mode="json")
-        except Exception as exc:  # noqa: BLE001 — decoration only, never fatal
+        except Exception as exc:  # noqa: BLE001 — decoration only, never fatal…
+            reraise_if_budget(exc)   # …except the run's token budget: no retry past it
             logger.warning("Report digest extraction failed (attempt %d: %s)", attempt, exc)
     return None

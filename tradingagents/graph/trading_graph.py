@@ -10,6 +10,7 @@ from typing import Any
 import tradingagents
 from tradingagents.agents.context import build_instrument_context, resolve_instrument_identity
 from tradingagents.agents.rating import run_rating
+from tradingagents.budget import reraise_if_budget
 from tradingagents.dataflows.config import run_config, run_config_context, set_config
 from tradingagents.dataflows.date_window import get_current_date, is_historical
 from tradingagents.dataflows.symbols import safe_ticker_component
@@ -385,7 +386,8 @@ class TradingAgentsGraph:
                     return reply.text if hasattr(reply, "text") else str(reply)
             sheet = facts.build(company_name, str(trade_date), started, asset_type, describe=describe)
             return sheet.model_dump(mode="json"), facts.render(sheet)
-        except Exception as exc:  # noqa: BLE001 — the run goes on without it
+        except Exception as exc:  # noqa: BLE001 — the run goes on without it, unless its budget is spent
+            reraise_if_budget(exc)
             logger.warning("fact sheet for %s failed: %s", company_name, exc, exc_info=True)
             return None, ""
 
@@ -407,6 +409,7 @@ class TradingAgentsGraph:
                 note = (f"{len(done.failed)} past decision(s) could not be settled this run "
                         "and stay pending.")
         except Exception as exc:
+            reraise_if_budget(exc)
             logger.warning("Settling past decisions failed: %s", exc)
             note = f"Past decisions could not be settled this run ({type(exc).__name__}); they stay pending."
         try:
