@@ -172,7 +172,7 @@ def build_prompt(state: dict, lint_report: dict, earlier_errata: str = "") -> st
     )
 
 
-def _run_once(llm, prompt: str, facts: Facts, callbacks=None) -> dict:
+def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None) -> dict:
     from langchain_core.messages import HumanMessage, ToolMessage
 
     bound = llm.bind_tools(TOOLS)
@@ -197,6 +197,10 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None) -> dict:
             if name == "submit_review":
                 return args
             result = calc(args.get("expression", "")) if name == "calc" else fact(facts, args.get("key", ""))
+            if on_step:
+                # The run page shows the review working, not a frozen step.
+                on_step({"kind": "calc" if name == "calc" else "fact",
+                         "detail": str(args.get("expression") if name == "calc" else args.get("key", ""))[:80]})
             messages.append(ToolMessage(content=result, tool_call_id=call["id"]))
     raise RuntimeError("the editor did not submit a review")
 
@@ -228,7 +232,7 @@ def dismissed_key(flag: dict) -> tuple:
 
 
 def review(llm, state: dict, lint_report: dict, earlier_errata: str = "", callbacks=None,
-           budget_seconds: float = RETRY_BUDGET_SECONDS, sleep=time.sleep) -> dict:
+           budget_seconds: float = RETRY_BUDGET_SECONDS, sleep=time.sleep, on_step=None) -> dict:
     """The editor's review, with retries and backoff for up to ``budget_seconds``.
     Raises EditorUnavailable when the budget runs out."""
     facts = Facts(state.get("fact_sheet"))
@@ -236,7 +240,7 @@ def review(llm, state: dict, lint_report: dict, earlier_errata: str = "", callba
     started, delay, last = time.monotonic(), 5.0, None
     while True:
         try:
-            out = _run_once(llm, prompt, facts, callbacks)
+            out = _run_once(llm, prompt, facts, callbacks, on_step)
             for key in ("findings", "digest_patch", "decision_flags"):
                 out[key] = _as_list(out.get(key))
             # A review that breaks the schema is a failed attempt, retried
