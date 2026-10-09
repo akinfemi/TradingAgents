@@ -216,3 +216,21 @@ def test_more_citation_and_volume_forms(sheet):
     vol = "61.0M shares"
     text2 = f"Average volume of {vol} at the ${close:.2f} close is about ${61.0e6 * close / 1e6:,.0f}M a day."
     assert [f for f in lint_text(text2, sheet, "portfolio_manager", "pm") if f.severity == "load_bearing"] == []
+
+
+@pytest.mark.unit
+def test_tangible_equity_and_labelled_news_figures_are_not_unsupported(sheet):
+    """Staging ONDS, 2026-10-09: both held a report."""
+    text = ("The balance-sheet point (tangible equity ~$0.33B against $1.24B of acquisition-related intangibles "
+            "and $1.04B derivative liabilities) is real. Note: the news-reported $165M/$56M order figures are "
+            "not fact-sheet items and are excluded from this thesis entirely.")
+    flags = [f for f in lint_text(text, sheet, "research_manager", "rm") if f.kind == "unsupported"]
+    assert flags == [], [f.quote for f in flags]
+    assert [f.kind for f in lint_text("Backlog of $165M supports the call.", sheet, "research_manager", "rm")] == ["unsupported"]
+
+
+@pytest.mark.unit
+def test_two_figures_in_one_sentence_are_one_finding(sheet):
+    state = {"fact_sheet": sheet.sheet, "investment_plan": "Orders of $165M and $56M support the call."}
+    flags = [f for f in lint_state(state)["flags"] if f["kind"] == "unsupported"]
+    assert len(flags) == 1

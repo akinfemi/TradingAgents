@@ -91,7 +91,8 @@ def render(errata: list[dict]) -> str:
         return ""
     lines = ["**Review errata.** The previous draft of this report failed review. Each item below is a "
              "statement that does not hold; do not repeat it, and restate any argument that depended on it "
-             "with cited fact-sheet keys.", ""]
+             "with cited fact-sheet keys. Write for the reader, who never sees this list: do not mention the "
+             "errata, their ids, the review or the previous draft.", ""]
     for e in errata:
         lines.append(f"[{e['id']}] {e.get('severity')} · {e.get('kind')} · source: {e.get('source')}")
         lines.append(f"  Claim:   \"{(e.get('quote') or '')[:260]}\"")

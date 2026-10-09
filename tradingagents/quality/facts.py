@@ -273,6 +273,16 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
         if cash is not None and not sti_gap:
             add(f"cash_sti.{cal}", cash + (sti or 0), "usd", "cash_and_short_term_investments",
                 "cash + short-term investments" + ("" if sti is not None else " (none tagged)"), f"at {end}")
+        # Acquisition-heavy balance sheets get argued as tangible equity; on the
+        # sheet, the figure checks (staging ONDS, 2026-10-09: "tangible equity
+        # ~$0.33B against $1.24B of acquisition intangibles" held a report).
+        gw, intang, eq = v("goodwill", end), v("intangibles", end), v("equity", end)
+        if gw is not None or intang is not None:
+            add(f"goodwill_intangibles.{cal}", (gw or 0) + (intang or 0), "usd", "goodwill_and_intangibles",
+                "goodwill + intangibles", f"at {end}")
+            if eq is not None:
+                add(f"tangible_equity.{cal}", eq - (gw or 0) - (intang or 0), "usd", "tangible_equity",
+                    "stockholders' equity − goodwill − intangibles", f"at {end}")
         prior = year_ago(end)
         if prior:
             for concept, key in (("revenue", "revenue_yoy"), ("shares_weighted", "shares_yoy")):
@@ -674,8 +684,9 @@ _LINE_ITEMS = {concept for concept, _kind, _tags in edgar_ext.LINES}
 _BALANCE_ROWS = [
     ("cash", "Cash"), ("sti", "Short-term investments"), ("cash_sti", "Cash + short-term investments"),
     ("debt", "Long-term debt"), ("debt_current", "Current debt"), ("derivative_liabilities", "Derivative liabilities"),
-    ("goodwill", "Goodwill"), ("intangibles", "Intangibles"), ("liabilities", "Total liabilities"),
-    ("equity", "Stockholders' equity"),
+    ("goodwill", "Goodwill"), ("intangibles", "Intangibles"), ("goodwill_intangibles", "Goodwill + intangibles"),
+    ("liabilities", "Total liabilities"), ("equity", "Stockholders' equity"),
+    ("tangible_equity", "Tangible equity (equity − goodwill − intangibles)"),
 ]
 
 

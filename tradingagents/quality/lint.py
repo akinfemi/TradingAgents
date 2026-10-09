@@ -297,9 +297,9 @@ def _sentence_values(sentence: str, facts: Facts, kind: str, exclude: Figure | N
 
 # A figure the text itself marks as not from the filings (R7: the RM lists
 # news figures as unverified) is a disclosure, not a claim.
-_LABELLED_UNVERIFIED = re.compile(r"\b(unverified|not on the fact sheet|not a fact[- ]sheet (?:key|figure)|"
-                                  r"headline[- ]only|not verified|cannot be verified|per (?:the )?news|"
-                                  r"reported by|dropped|disregard(?:ed)?)\b", re.I)
+_LABELLED_UNVERIFIED = re.compile(r"\b(unverified|not on the fact sheet|not (?:a )?fact[- ]sheet (?:keys?|figures?|items?)|"
+                                  r"headline[- ]only|news[- ](?:reported|only)|not verified|cannot be verified|"
+                                  r"per (?:the )?news|reported by|dropped|disregard(?:ed)?|excluded from)\b", re.I)
 
 
 # Only where the text says it is adding periods up.
@@ -699,6 +699,11 @@ def lint_state(state: dict) -> dict:
         own = {k: v for k, v in sources.items() if not stage.startswith(k)}
         flags.extend(lint_text(text, facts, stage, field_name, own))
     flags.extend(check_target(state.get("portfolio_decision"), facts))
+    # Two figures in one sentence are one finding, not two.
+    unique: dict[tuple, LintFlag] = {}
+    for f in flags:
+        unique.setdefault((f.kind, f.stage, f.field, f.quote), f)
+    flags = list(unique.values())
     counts: dict[str, int] = {}
     for f in flags:
         counts[f.severity] = counts.get(f.severity, 0) + 1

@@ -323,3 +323,11 @@ def test_prices_render_with_cents(onds):
     text = facts.render(onds)
     close = onds.value("price.close")
     assert f"[F:price.close] ${close:,.2f}" in text
+
+
+@pytest.mark.unit
+def test_tangible_equity_is_on_the_sheet(onds):
+    gw, intang, eq = (onds.value(f"{c}.2026Q2") for c in ("goodwill", "intangibles", "equity"))
+    assert onds.value("goodwill_intangibles.2026Q2") == pytest.approx(gw + intang)
+    assert onds.value("tangible_equity.2026Q2") == pytest.approx(eq - gw - intang)
+    assert "Tangible equity (equity − goodwill − intangibles) [tangible_equity]" in facts.render(onds)

@@ -270,3 +270,34 @@ def test_a_kept_sentiment_analyst_keeps_its_structured_block():
     st = {**state(), "sentiment_structured": {"overall_score": 6, "coverage": "30 StockTwits messages"}}
     kept = errata.kept_outputs(st, set(), "research", loop.ANALYST_REPORT_KEYS)
     assert kept["social"]["sentiment_structured"]["coverage"] == "30 StockTwits messages"
+
+
+UNSUPPORTED_PM = "Rating: Hold. Backlog of $250.0M supports the call."
+
+
+@pytest.mark.unit
+def test_a_lint_flag_the_editor_dismissed_does_not_hold_the_run():
+    """Staging ONDS, 2026-10-09: held on lint flags the editor had checked
+    and dismissed."""
+    lb = [f for f in loop.lint_state(state(pm=UNSUPPORTED_PM))["flags"] if f["severity"] == "load_bearing"]
+    assert lb, "the fixture needs a load-bearing lint flag"
+    dismissed = [{k: f[k] for k in ("kind", "stage", "field", "quote")} | {"reason": "derived"} for f in lb]
+    graph = FakeGraph([state(pm=UNSUPPORTED_PM)])
+    final, _ = loop.run_with_quality(graph, "ONDS", "2026-10-05", None,
+                                     review_fn=review_with({"lint_dismissed": dismissed}))
+    assert final["quality"]["status"] == "clean" and len(graph.calls) == 1
+    # Not dismissed, the same flag forces a revision.
+    graph = FakeGraph([state(pm=UNSUPPORTED_PM), state()])
+    final, _ = loop.run_with_quality(graph, "ONDS", "2026-10-05", None, review_fn=review_with({}, {}))
+    assert final["quality"]["status"] == "revised"
+
+
+@pytest.mark.unit
+def test_dismissals_resolve_by_lint_id():
+    flags = [{"kind": "unsupported", "stage": "rm", "field": "rm", "quote": "a", "severity": "load_bearing"},
+             {"kind": "cited_mismatch", "stage": "pm", "field": "pm", "quote": "b", "severity": "minor"}]
+    out = editor._resolve_dismissals([{"id": "L2", "reason": "rounding"}, {"id": "L9", "reason": "x"}, {"id": "1"}], flags)
+    assert [d["quote"] for d in out] == ["b", "a"] and out[0]["reason"] == "rounding"
+    prompt = editor.build_prompt({"fact_sheet_text": "s"}, {"flags": flags})
+    assert "- L1 [load_bearing · unsupported]" in prompt and "lint_dismissed" in prompt
+    assert "do not mention the errata" in errata.render([{"id": "E1", "severity": "minor", "kind": "k", "quote": "q"}])

@@ -107,6 +107,10 @@ TOOLS = [
                  "value": {"type": "string"}},
                  "required": ["field", "action"]}},
              "decision_flags": {"type": "array", "items": {"type": "string"}},
+             "lint_dismissed": {"type": "array", "items": {"type": "object", "properties": {
+                 "id": {"type": "string", "description": "the lint finding's id, e.g. L3"},
+                 "reason": {"type": "string"}},
+                 "required": ["id", "reason"]}},
              "editor_note": {"type": "string"},
              "hold_reason": {"type": "string"},
          },
@@ -134,6 +138,7 @@ Then submit the review with `submit_review`:
 - Severity: load_bearing only for problems in the ruling, the portfolio manager's decision or the digest (what a reader sees and acts on). A problem in an analyst report or a debate turn that the ruling and decision do not rely on is minor.
 - editor_note: at most three short lines for the reader about what the review changed, empty if nothing.
 - hold_reason: one line explaining why the report should not be published if it could not be fixed, else empty.
+- lint_dismissed: every lint finding (by id, e.g. L3) you checked with the tools and found not to be an error, with the reason (the derivation that reproduces the figure, or why the text is not a claim). A dismissed finding no longer counts against publication; a lint finding you neither dismiss nor fix does.
 
 Lint findings are leads, not verdicts: confirm or dismiss each one with the tools."""
 
@@ -147,11 +152,15 @@ def _transcript(state: dict) -> str:
     return "\n\n".join(parts)
 
 
+def prompt_flags(lint_report: dict) -> list[dict]:
+    """The lint findings the editor sees, in order: ids L1… index this list."""
+    return [f for f in lint_report.get("flags") or [] if f.get("blocking") or f.get("severity") == "load_bearing"][:80]
+
+
 def build_prompt(state: dict, lint_report: dict, earlier_errata: str = "") -> str:
-    flags = [f for f in lint_report.get("flags") or [] if f.get("blocking") or f.get("severity") == "load_bearing"]
     lint_lines = "\n".join(
-        f"- [{f['severity']} · {f['kind']}] {f['stage']}/{f['field']}: \"{f['quote'][:220]}\" — {f.get('expected') or ''}"
-        for f in flags[:80]) or "(no blocking flags)"
+        f"- L{i} [{f['severity']} · {f['kind']}] {f['stage']}/{f['field']}: \"{f['quote'][:220]}\" — {f.get('expected') or ''}"
+        for i, f in enumerate(prompt_flags(lint_report), start=1)) or "(no blocking flags)"
     return (
         f"{BRIEF}\n\n"
         + (f"# Errata from the previous draft (check each fix landed)\n{earlier_errata}\n\n" if earlier_errata else "")
@@ -187,6 +196,22 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None) -> dict:
     raise RuntimeError("the editor did not submit a review")
 
 
+def _resolve_dismissals(raw, flags: list[dict]) -> list[dict]:
+    """The editor's dismissals as the flags they name (kind, stage, field,
+    quote) with its reason; an unknown id is ignored."""
+    out = []
+    for d in raw or []:
+        m = re.fullmatch(r"\s*L?(\d+)\s*", str((d or {}).get("id", "")))
+        if m and 1 <= int(m.group(1)) <= len(flags):
+            f = flags[int(m.group(1)) - 1]
+            out.append({k: f.get(k) for k in ("kind", "stage", "field", "quote")} | {"reason": str(d.get("reason") or "")[:400]})
+    return out
+
+
+def dismissed_key(flag: dict) -> tuple:
+    return (flag.get("kind"), flag.get("stage"), flag.get("field"), flag.get("quote"))
+
+
 def review(llm, state: dict, lint_report: dict, earlier_errata: str = "", callbacks=None,
            budget_seconds: float = RETRY_BUDGET_SECONDS, sleep=time.sleep) -> dict:
     """The editor's review, with retries and backoff for up to ``budget_seconds``.
@@ -201,6 +226,7 @@ def review(llm, state: dict, lint_report: dict, earlier_errata: str = "", callba
                 out[key] = out.get(key) or []
             out["editor_note"] = (out.get("editor_note") or "").strip()
             out["hold_reason"] = (out.get("hold_reason") or "").strip()
+            out["lint_dismissed"] = _resolve_dismissals(out.get("lint_dismissed"), prompt_flags(lint_report))
             return out
         except Exception as exc:  # noqa: BLE001 — retried, then a hold
             if is_fatal(exc):

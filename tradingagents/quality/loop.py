@@ -51,6 +51,7 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
     lint, gates, open_errata}``."""
     passes: list[dict] = []
     all_errata: list[dict] = []
+    dismissed: set[tuple] = set()
     revision = None
     status, hold_reason, note = "held", "", ""
     final_state, rating = {}, None
@@ -77,7 +78,11 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
         if final_state.get("report_digest") is not None:
             final_state["report_digest"] = patched
         relint = lint_state(final_state)
-        open_flags = _load_bearing(relint)
+        # The editor checks every lint lead with the tools; one it dismissed
+        # stays dismissed while its text is unchanged (staging ONDS, 2026-10-09:
+        # a hold on lint flags the editor had verified as correct).
+        dismissed |= {editor.dismissed_key(d) for d in review.get("lint_dismissed") or []}
+        open_flags = [f for f in _load_bearing(relint) if editor.dismissed_key(f) not in dismissed]
         editor_lb = [f for f in review["findings"] if f.get("severity") == "load_bearing"
                      and _DECIDING.match(str((f.get("location") or {}).get("stage", "")))]
         # Only the ruling, the decision and the digest can force a revision; a
