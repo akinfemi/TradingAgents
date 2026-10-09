@@ -117,9 +117,13 @@ class _Cites:
     def findall(self, text: str) -> list[str]:
         out = []
         for raw in _CITE_RAW.findall(text or ""):
-            if "/" in raw and "." in raw:
-                base, periods = raw.split(".", 1)
-                out.extend(f"{base}.{p}" for p in periods.split("/") if p)
+            parts = [p.removeprefix("F:") for p in raw.split("/") if p]
+            if len(parts) > 1 and all("." in p for p in parts):
+                out.extend(parts)                       # [F:ema10.value/F:sma50.value]
+            elif len(parts) > 1 and "." in parts[0]:
+                base = parts[0].split(".", 1)[0]       # [F:fcf.2026Q1/2026Q2]
+                out.append(parts[0])
+                out.extend(f"{base}.{p}" for p in parts[1:])
             else:
                 out.append(raw)
         return out
@@ -282,9 +286,12 @@ def _sentence_values(sentence: str, facts: Facts, kind: str, exclude: Figure | N
     out = [_fact_as(facts.get(k), kind) for k in _CITE.findall(sentence) if facts.get(k)]
     out = [v for v in out if v is not None]
     out += [g.value for g in figures(sentence) if g.kind == kind and (exclude is None or g.raw != exclude.raw)]
-    # Per-share results divide by a share count, which is not a money figure.
+    # Per-share results divide by a share count, and dollar volume multiplies
+    # one ("61.0M shares at the $6.85 close"): share counts are not money figures.
     if kind == "usd":
         out += [float(f["value"]) for k in _CITE.findall(sentence) if (f := facts.get(k)) and f.get("unit") == "shares"]
+        out += [float(n.replace(",", "")) * _SCALE[u.lower()]
+                for n, u in re.findall(r"(\d[\d,]*(?:\.\d+)?)\s?(M|B|million|billion)\s+shares", sentence, re.I)]
     return out
 
 
@@ -293,6 +300,30 @@ def _sentence_values(sentence: str, facts: Facts, kind: str, exclude: Figure | N
 _LABELLED_UNVERIFIED = re.compile(r"\b(unverified|not on the fact sheet|not a fact[- ]sheet (?:key|figure)|"
                                   r"headline[- ]only|not verified|cannot be verified|per (?:the )?news|"
                                   r"reported by|dropped|disregard(?:ed)?)\b", re.I)
+
+
+# Only where the text says it is adding periods up.
+_SUMS_PERIODS = re.compile(r"\b(H[12]|first half|second half|half[- ]year|combined|together|cumulative|"
+                           r"year[- ]to[- ]date|YTD|9M|nine months|TTM|trailing|over (?:the )?(?:last )?"
+                           r"(?:two|three|four) quarters|across)\b", re.I)
+
+
+def _period_sum(fig: Figure, facts: Facts) -> bool:
+    """A sum of two to four consecutive quarters of one line item ("$741.5M
+    in H1" = stock issued for acquisitions in 2026Q1 + 2026Q2)."""
+    by_concept: dict[str, list[tuple[str, float]]] = {}
+    for f in facts.numeric():
+        key = f["key"]
+        concept, _, period = key.partition(".")
+        if re.fullmatch(r"\d{4}Q[1-4]", period) and f.get("unit") == "usd":
+            by_concept.setdefault(concept, []).append((period, float(f["value"])))
+    for series in by_concept.values():
+        vals = [v for _, v in sorted(series)]
+        for n in (2, 3, 4):
+            for i in range(len(vals) - n + 1):
+                if _matches_value(fig, sum(vals[i:i + n])):
+                    return True
+    return False
 
 
 # ---- checks ----------------------------------------------------------------------------------
@@ -355,6 +386,8 @@ def unsupported_figures(text: str, facts: Facts, stage: str, field_name: str) ->
         if any(_matches_fact(fig, f) for f in numeric):
             continue
         if _LABELLED_UNVERIFIED.search(fig.sentence):
+            continue
+        if _SUMS_PERIODS.search(fig.sentence) and _period_sum(fig, facts):
             continue
         if _derivable(fig, _context_values(text, fig, facts),
                       _multiples(text[max(0, fig.start - 300): fig.end + 60])):

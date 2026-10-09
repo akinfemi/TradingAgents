@@ -205,3 +205,14 @@ def test_a_key_cited_for_a_bare_number_is_not_matched_to_a_dollar_figure(sheet):
     atr = sheet.value("atr14.usd")
     text = f"The $7.12 stop sits about 0.17 ATR below the $7.19 close ((7.19-7.12)/{atr:.4f} [F:atr14.usd])."
     assert [f for f in lint_text(text, sheet, "portfolio_manager", "pm") if f.kind == "cited_mismatch"] == []
+
+
+
+@pytest.mark.unit
+def test_more_citation_and_volume_forms(sheet):
+    text = "Price is below the 10-day EMA and 50-day SMA [F:ema10.value/F:sma50.value]."
+    assert [f for f in lint_text(text, sheet, "research_manager", "rm") if f.kind == "unknown_key"] == []
+    close = sheet.value("price.close")
+    vol = "61.0M shares"
+    text2 = f"Average volume of {vol} at the ${close:.2f} close is about ${61.0e6 * close / 1e6:,.0f}M a day."
+    assert [f for f in lint_text(text2, sheet, "portfolio_manager", "pm") if f.severity == "load_bearing"] == []

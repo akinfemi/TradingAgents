@@ -638,6 +638,10 @@ def _fmt(f: Fact) -> str:
             return f"{'−' if v < 0 else ''}${a / 1e6:,.1f}M"
         if a >= 1e5:
             return f"{'−' if v < 0 else ''}${a / 1e6:,.2f}M"
+        # Prices, averages, ATR and levels keep their cents: rendering $6.85 as
+        # "$7" put every stage on rounded prices (staging ONDS, 2026-10-08).
+        if a < 1000:
+            return f"{'−' if v < 0 else ''}${a:,.2f}"
         return f"{'−' if v < 0 else ''}${a:,.0f}"
     if f.unit == "usd_per_share":
         return f"{'−' if v < 0 else ''}${abs(v):,.2f}"

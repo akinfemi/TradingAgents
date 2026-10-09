@@ -313,3 +313,13 @@ def test_a_missing_investments_tag_is_not_a_cash_crash():
                         offline=True)
     assert sheet.get("cash_sti.2026Q1") is not None
     assert sheet.get("cash_sti.2026Q2") is None
+
+
+
+@pytest.mark.unit
+def test_prices_render_with_cents(onds):
+    """Staging ONDS, 2026-10-08: "$7" for a $6.85 close put every stage on
+    rounded prices."""
+    text = facts.render(onds)
+    close = onds.value("price.close")
+    assert f"[F:price.close] ${close:,.2f}" in text
