@@ -117,9 +117,11 @@ def test_a_digest_patch_is_applied_and_relinted():
     graph = FakeGraph([state()])
     patch = [{"field": "headline", "action": "replace", "value": "Hold: revenue of $83.8M [F:revenue.2026Q2]"},
              {"field": "bull_thesis", "action": "replace", "value": "Revenue of $99.0M [F:revenue.2026Q2]"}]
+    original = state()["report_digest"]["bull_thesis"]
     final, _ = loop.run_with_quality(graph, "ONDS", "2026-10-05", None, review_fn=review_with({"digest_patch": patch}))
     assert final["report_digest"]["headline"].startswith("Hold: revenue of $83.8M")
-    assert final["report_digest"]["bull_thesis"] == ""  # a replacement that fails lint becomes a deletion
+    # A text replacement that fails lint is not applied: the original stays for the relint.
+    assert final["report_digest"]["bull_thesis"] == original
 
 
 @pytest.mark.unit
@@ -351,8 +353,9 @@ def test_a_digest_patch_with_review_vocabulary_is_rejected():
               "value": "Underweight: verified quality, but spending outruns cash conversion"},
              {"field": "bull_points[0].detail", "action": "replace", "value": "FCF covers capex (per errata E2)."}]
     out, applied = editor.apply_patch(digest, patch, editor.Facts(SHEET))
-    assert out["headline"] == "" and out["bull_points"] == []
-    assert [a["action"] for a in applied] == ["delete", "delete"]
+    # The headline keeps its text (the relint still flags it); the point is deleted.
+    assert out["headline"] == digest["headline"] and out["bull_points"] == []
+    assert applied == [{"field": "bull_points[0].detail", "action": "delete"}]
     fixed, _ = editor.apply_patch(digest, [{"field": "headline", "action": "replace",
                                              "value": "Underweight: spending is outrunning cash conversion"}],
                                   editor.Facts(SHEET))

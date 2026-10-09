@@ -278,8 +278,9 @@ _PATCHABLE = {"headline", "bull_thesis", "bull_points", "bear_thesis", "bear_poi
 
 def apply_patch(digest: dict, patch: list[dict], facts: Facts) -> tuple[dict, list[dict]]:
     """(patched digest, applied patches). A replacement whose text fails the
-    lint (a figure off the sheet, a wrong direction) is applied as a deletion
-    instead. Unknown fields are ignored; the rating is never touched."""
+    lint (a figure off the sheet, a wrong direction) is not applied: a list
+    item is deleted instead, a text field keeps its original text. Unknown
+    fields are ignored; the rating is never touched."""
     out = json.loads(json.dumps(digest or {}))
     applied = []
 
@@ -295,14 +296,19 @@ def apply_patch(digest: dict, patch: list[dict], facts: Facts) -> tuple[dict, li
         if not m or m.group("field") not in _PATCHABLE or m.group("field") not in out:
             continue
         action, value = p.get("action"), p.get("value") or ""
+        field, index, sub = m.group("field"), m.group("index"), m.group("sub")
         if action == "replace":
-            # What the relint would count as open (load-bearing, blocking or
-            # not: an off-sheet figure in a key point) is not applied.
-            bad = [f for f in lint_text(value, facts, "editor", f"digest.{m.group('field')}")
+            # A replacement the relint would count as open (blocking, or
+            # load-bearing in a load-bearing field such as the headline) is not
+            # applied. A list item becomes a deletion; a text field keeps its
+            # original text, so the relint still sees the open flag and the loop
+            # revises (an empty headline would publish with nothing flagged).
+            bad = [f for f in lint_text(value, facts, "editor", f"digest.{field}")
                    if f.blocking or f.severity == "load_bearing"]
+            if bad and index is None:
+                continue
             if bad:
                 action = "delete"
-        field, index, sub = m.group("field"), m.group("index"), m.group("sub")
         target = out.get(field)
         if index is None:
             if action == "delete":

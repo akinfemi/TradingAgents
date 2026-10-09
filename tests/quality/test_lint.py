@@ -465,7 +465,11 @@ def test_11_a_patch_the_relint_would_hold_is_not_applied_and_digest_points_are_l
     digest = {"headline": "Hold: old", "bull_points": [{"title": "Cash", "detail": "Liquidity is ample."}]}
     out, applied = editor.apply_patch(digest, [{"field": "headline", "action": "replace",
                                                 "value": "Hold: backlog of $412M covers two years of revenue"}], sheet)
-    assert out["headline"] == "" and applied == [{"field": "headline", "action": "delete"}]
+    # Not applied, and not emptied: the original stays, so the relint still sees it.
+    assert out["headline"] == "Hold: old" and applied == []
+    out, applied = editor.apply_patch(digest, [{"field": "bull_points[0].detail", "action": "replace",
+                                                "value": "R&D was $23.4M [F:rnd.2026Q2]."}], sheet)
+    assert out["bull_points"] == [] and applied == [{"field": "bull_points[0].detail", "action": "delete"}]
     out, _ = editor.apply_patch(digest, [{"field": "headline", "action": "replace",
                                           "value": "Hold: revenue of $83.8M grew fast"}], sheet)
     assert out["headline"] == "Hold: revenue of $83.8M grew fast"
@@ -489,8 +493,118 @@ def test_12_citation_forms_brackets_and_long_text(sheet):
     # Parentheses are a negative only in a table.
     assert figures("Revenue ($83.8M) beat")[0].value == 83.8e6
     assert figures("| Q2 | ($86.1M) |")[0].value == -86.1e6
-    # A run-on text without sentence breaks is linted in linear time (was 9.1s at 40k chars).
+    # A run-on text is read in one pass: sentence bounds are computed once, not
+    # scanned per figure (was 9.1s at 40k chars), and a figure's "sentence" is
+    # a bounded window.
+    from tradingagents.quality import lint as lint_module
+
     text = "".join(f"G&A $128.0M [F:ga.2026Q2], S&M $20.9M, backlog ${100 + i}.{i % 10}M; " for i in range(750))
-    started = time.monotonic()
-    lint_text(text, sheet, "research_manager", "rm")
-    assert len(text) > 40_000 and time.monotonic() - started < 5
+
+    def no_rescan(*_a, **_k):
+        raise AssertionError("figures() rescanned the text per figure")
+
+    original = lint_module._sentence_at
+    lint_module._sentence_at = no_rescan
+    try:
+        figs = figures(text)
+    finally:
+        lint_module._sentence_at = original
+    assert len(text) > 40_000 and len(figs) == 2250
+    assert max(len(f.sentence) for f in figs) <= lint_module._MAX_SENTENCE + 20
+    assert time.monotonic()  # (no wall-clock bound: CI timing is not a test)
+
+
+# ---- second review of the linter, 2026-10-09 (negative tests) -------------------------------
+
+
+@pytest.mark.unit
+def test_r2_1_a_rejected_text_replacement_keeps_the_original(sheet):
+    from tradingagents.quality import editor
+
+    digest = {"headline": "Hold: the original headline"}
+    out, applied = editor.apply_patch(digest, [{"field": "headline", "action": "replace",
+                                                "value": "Hold: backlog of $412M covers two years"}], sheet)
+    assert out["headline"] == "Hold: the original headline" and applied == []
+
+
+@pytest.mark.unit
+def test_r2_2_a_trailing_citation_is_not_the_next_figures(sheet):
+    for text in ("| Revenue | $83.8M [F:revenue.2026Q2] | $83.8M [F:revenue.2026Q1] |",
+                 "R&D was $31.0M [F:rnd.2026Q2], $31.0M [F:rnd.2026Q1] a quarter earlier."):
+        assert "cited_mismatch" in lb_kinds(text, sheet), text
+    # Cite-first throughout is still read as cite-first.
+    text = (f"[F:rnd.2026Q1] ${sheet.value('rnd.2026Q1') / 1e6:.1f}M, "
+            f"[F:rnd.2026Q2] ${sheet.value('rnd.2026Q2') / 1e6:.1f}M and [F:sm.2026Q2] $20.9M.")
+    assert lb_kinds(text, sheet) == []
+
+
+@pytest.mark.unit
+def test_r2_3_a_level_is_not_a_change_and_the_direction_must_agree(sheet):
+    for text in ("Cash fell to $368.1M [F:cash.2026Q2].", "Revenue rose to $33.7M [F:revenue.2026Q2].",
+                 "Operating cash flow improved by $34.8M [F:ocf.2026Q1][F:ocf.2026Q2].",
+                 "Cash rose by $368.1M [F:cash.2026Q2]."):
+        assert "cited_mismatch" in lb_kinds(text, sheet), text
+    for text in ("Cash fell by $368.1M [F:cash.2026Q2].", "Revenue rose $33.7M quarter on quarter [F:revenue.2026Q2].",
+                 "Operating cash flow worsened by $34.8M [F:ocf.2026Q1][F:ocf.2026Q2]."):
+        assert lb_kinds(text, sheet) == [], text
+
+
+@pytest.mark.unit
+def test_r2_4_a_negative_percentage_is_not_excused_by_its_own_digits(sheet):
+    for text in ("TTM revenue growth was −979.3% [F:ttm_revenue_yoy.2026Q2].",
+                 "The stock is −41.3% from its 52-week low [F:52w.from_low_pct].",
+                 "Share count changed −232.4% YoY [F:shares_yoy.2026Q2]."):
+        assert "cited_mismatch" in lb_kinds(text, sheet), text
+    assert lb_kinds("TTM revenue growth was 979.3% [F:ttm_revenue_yoy.2026Q2].", sheet) == []
+
+
+@pytest.mark.unit
+def test_r2_5_a_per_share_input_is_not_the_result(sheet):
+    decision = {"rating": "Underweight", "price_target": 6.08,
+                "target_math": "Book value of $6.08 per share × 1.5x P/B = $9.12 per share"}
+    assert [f.kind for f in check_target(decision, sheet)] == ["target_math"]
+
+
+@pytest.mark.unit
+def test_r2_6_no_range_across_a_citation(sheet):
+    text = "Gross profit of $36.1M [F:gross_profit.2026Q2] − $250.0M [F:opex.2026Q2] opex."
+    assert "cited_mismatch" in lb_kinds(text, sheet)
+    assert figures(text)[1].range_low is None
+
+
+@pytest.mark.unit
+def test_r2_7_a_line_cited_without_its_period(sheet):
+    """Matches a period: a minor format note. Matches none: a mismatch. Not a line: unknown."""
+    flags = lint_text("Revenue grew 1,235.4% [F:revenue_yoy] in Q2.", sheet, "research_manager", "rm")
+    assert [(f.kind, f.severity) for f in flags] == [("citation_format", "minor")]
+    assert lb_kinds("Revenue grew 900% [F:revenue_yoy] in Q2.", sheet) == ["cited_mismatch"]
+    assert lb_kinds("Margin of 5% [F:nonsense_line].", sheet) == ["unknown_key"]
+
+
+@pytest.mark.unit
+def test_r2_8_a_spaced_dash_is_punctuation(sheet):
+    assert figures("Q1 net income – $362.8M [F:net_income.2026Q1] – came")[0].value == 362.8e6
+    assert lb_kinds("Q1 net income – $362.8M [F:net_income.2026Q1] – came from a warrant gain.", sheet) == []
+    assert figures("OCF was −$86.1M")[0].value == -86.1e6
+
+
+@pytest.mark.unit
+def test_r2_9_a_net_figure_does_not_double_count(sheet):
+    assert "cited_mismatch" in lb_kinds("Net cash (derived) of $2.1B [F:cash.2026Q2][F:sti.2026Q2].", sheet)
+    cash_sti = sheet.value("cash_sti.2026Q2")
+    assert lb_kinds(f"Net cash (derived) of ${cash_sti / 1e9:.2f}B [F:cash.2026Q2][F:sti.2026Q2].", sheet) == []
+
+
+@pytest.mark.unit
+def test_r2_10_figures_are_frozen_and_pathological_input_is_bounded(sheet):
+    import dataclasses
+
+    from tradingagents.quality import lint as lint_module
+
+    fig = figures("$83.8M")[0]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        fig.value = 1.0
+    text = "Values " + ", ".join(f"${i}.3M [F:rnd.2026Q2]" for i in range(1500)) + " less $5M."
+    figs = figures(text)
+    assert max(len(f.sentence) for f in figs) <= lint_module._MAX_SENTENCE + 20
+    assert len(figures("$1M " * (lint_module._MAX_FIGURES + 10))) == lint_module._MAX_FIGURES
