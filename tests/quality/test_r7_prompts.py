@@ -48,3 +48,13 @@ def test_research_manager_adjudicates_the_numbers():
     prompt = str(llm.invoke.call_args[0][0])
     assert "Adjudicate the numbers first" in prompt and "Disputed figures" in prompt
     assert ADJUDICATION[:40] in prompt
+
+
+@pytest.mark.unit
+def test_the_digest_reads_the_research_managers_ruling():
+    """Upstream moved the ruling to investment_plan (cf960d6); the digest read
+    the old key and lost it (code review, 2026-10-09)."""
+    from tradingagents.graph.digest import _sources_from_state
+    sources = dict(_sources_from_state({"investment_plan": "RULING: the bear case holds",
+                                        "investment_debate_state": {"bull_history": "b"}}))
+    assert "the bear case holds" in (sources["Research manager ruling"] or "")

@@ -58,6 +58,17 @@ def _call_recorder():
 
 
 def run_one(ticker: str, trade_date: str, out_dir: Path, base_config: dict) -> dict:
+    """One pipeline in a worker process. An SDK error is re-raised as a plain
+    RuntimeError carrying its message: the SDKs' error classes can't be
+    unpickled, which breaks the pool and fails every queued ticker with a
+    TypeError that hides the cause (eval 2026-10-09: an out-of-credit key)."""
+    try:
+        return _run_one(ticker, trade_date, out_dir, base_config)
+    except Exception as exc:  # noqa: BLE001 — re-raised with its message
+        raise RuntimeError(f"{type(exc).__name__}: {exc}") from None
+
+
+def _run_one(ticker: str, trade_date: str, out_dir: Path, base_config: dict) -> dict:
     import common  # noqa: F401  (puts server/ on sys.path in the child process)
 
     sys.path.insert(0, str(common.SERVER_DIR))
@@ -155,7 +166,8 @@ def main() -> int:
                 failures += 1
                 (label_dir / ticker).mkdir(parents=True, exist_ok=True)
                 (label_dir / ticker / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
-                print(f"  {ticker}: FAILED (see runs/{args.label}/{ticker}/error.txt)", flush=True)
+                print(f"  {ticker}: FAILED ({str(fut.exception())[:200]}; see runs/{args.label}/{ticker}/error.txt)",
+                      flush=True)
     return 1 if failures else 0
 
 

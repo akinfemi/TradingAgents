@@ -47,12 +47,13 @@ def _sources_from_state(final_state: dict) -> list[tuple[str, str | None]]:
         ("Fundamentals analyst report", _clip(final_state.get("fundamentals_report"))),
         ("Bull researcher argument", _clip(debate.get("bull_history"))),
         ("Bear researcher argument", _clip(debate.get("bear_history"))),
-        ("Research manager ruling", _clip(debate.get("judge_decision"))),
+        # Upstream renamed the ruling to investment_plan (cf960d6, 2026-09-24);
+        # the old key was read here until 2026-10-09, so digests lost the ruling.
+        ("Research manager ruling", _clip(final_state.get("investment_plan") or debate.get("judge_decision"))),
         ("Trader plan", _clip(final_state.get("trader_investment_plan"))),
         ("Aggressive risk analyst", _clip(risk.get("aggressive_history"))),
         ("Neutral risk analyst", _clip(risk.get("neutral_history"))),
         ("Conservative risk analyst", _clip(risk.get("conservative_history"))),
-        ("Risk judge ruling", _clip(risk.get("judge_decision"))),
         ("Final portfolio decision", _clip(final_state.get("final_trade_decision"))),
     ]
 

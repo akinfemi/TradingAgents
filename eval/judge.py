@@ -88,7 +88,7 @@ _SECTIONS = (
     ("Fundamentals analyst report", lambda s: s.get("fundamentals_report")),
     ("Bull researcher", lambda s: (s.get("investment_debate_state") or {}).get("bull_history")),
     ("Bear researcher", lambda s: (s.get("investment_debate_state") or {}).get("bear_history")),
-    ("Research manager ruling", lambda s: (s.get("investment_debate_state") or {}).get("judge_decision")),
+    ("Research manager ruling", lambda s: s.get("investment_plan") or (s.get("investment_debate_state") or {}).get("judge_decision")),
     ("Trader plan", lambda s: s.get("trader_investment_plan")),
     ("Risk review: aggressive", lambda s: (s.get("risk_debate_state") or {}).get("aggressive_history")),
     ("Risk review: neutral", lambda s: (s.get("risk_debate_state") or {}).get("neutral_history")),
