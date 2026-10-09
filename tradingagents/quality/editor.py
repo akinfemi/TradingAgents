@@ -182,7 +182,10 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None) -> d
     # Prompt caching is explicit on Anthropic only; other providers cache
     # automatically and may reject the field.
     block = {"type": "text", "text": prompt}
-    if type(llm).__name__ == "ChatAnthropic":
+    # Claude needs an explicit breakpoint, direct or behind OpenRouter (which
+    # passes it through); without it the ~50K-token prompt bills in full on
+    # every tool round (code review 2026-10-09).
+    if type(llm).__name__ == "ChatAnthropic" or str(getattr(llm, "model_name", "")).startswith("anthropic/"):
         block["cache_control"] = {"type": "ephemeral"}
     messages = [HumanMessage(content=[block])]
     for _ in range(MAX_TOOL_ROUNDS):

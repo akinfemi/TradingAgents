@@ -364,9 +364,30 @@ def test_effort_reaches_models_behind_openrouter(monkeypatch):
     """All testing runs through OpenRouter (2026-10-09): the editor's medium
     effort must reach a Claude or GPT model there as OpenRouter's reasoning."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test")
-    llm = editor.create_editor_llm({"llm_provider": "anthropic", "deep_think_llm": "x", "editor_provider": "openrouter",
-                                    "editor_llm": "anthropic/claude-sonnet-5.5", "editor_effort": "medium"})
-    assert llm.extra_body == {"reasoning": {"effort": "medium"}}
+    gpt = editor.create_editor_llm({"llm_provider": "anthropic", "deep_think_llm": "x", "editor_provider": "openrouter",
+                                    "editor_llm": "openai/gpt-6.1-sol", "editor_effort": "medium"})
+    assert gpt.extra_body == {"reasoning": {"effort": "medium"}}
+    # Claude behind OpenRouter: no reasoning (it would switch on thinking and
+    # break the tool loop), but the prompt is cached.
+    claude = editor.create_editor_llm({"llm_provider": "anthropic", "deep_think_llm": "x", "editor_provider": "openrouter",
+                                       "editor_llm": "anthropic/claude-sonnet-5.5", "editor_effort": "medium"})
+    assert not (claude.extra_body or {}).get("reasoning")
+    seen = {}
+
+    class Bound:
+        def invoke(self, messages, config=None):
+            seen["block"] = messages[0].content[0]
+            from langchain_core.messages import AIMessage
+            return AIMessage(content="", tool_calls=[{"name": "submit_review", "args": {"findings": []}, "id": "1"}])
+
+    class Fake:
+        model_name = "anthropic/claude-sonnet-5.5"
+
+        def bind_tools(self, _tools):
+            return Bound()
+
+    editor._run_once(Fake(), "prompt", editor.Facts({}))
+    assert seen["block"]["cache_control"] == {"type": "ephemeral"}
 
 
 @pytest.mark.unit
