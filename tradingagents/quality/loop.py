@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 from tradingagents.quality import editor, errata
 from tradingagents.quality.lint import Facts, lint_state
@@ -56,6 +57,16 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
     status, hold_reason, note = "held", "", ""
     final_state, rating = {}, None
     max_revisions = int((getattr(graph, "config", None) or {}).get("quality_max_revisions", MAX_REVISIONS))
+
+    def report(step: str, **detail) -> None:
+        """A review-activity event for the run page (node "Quality Review",
+        delta {"_review": …}); never fails the run."""
+        if on_progress:
+            try:
+                on_progress("Quality Review", {"_review": {"step": step, **detail}}, final_state)
+            except Exception:  # noqa: BLE001 — progress is best-effort
+                logger.debug("review progress event failed", exc_info=True)
+
     for attempt in range(max_revisions + 1):
         final_state, rating = graph.propagate(ticker, trade_date, on_progress=on_progress, callbacks=callbacks,
                                               revision=revision, record=False, **propagate_kwargs)
@@ -66,11 +77,32 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
         if on_progress:
             on_progress("Quality Review", {}, final_state)
         lint = (final_state.get("quality") or {}).get("lint") or lint_state(final_state)
+        leads = sum(1 for f in lint.get("flags") or [] if f.get("blocking") or f.get("severity") == "load_bearing")
+        report("checking", passes=attempt, leads=leads)
+        counts = {"facts": 0, "calcs": 0, "last": 0.0}
+
+        def on_step(ev: dict, counts: dict = counts) -> None:
+            """Tool calls as running totals, at most one event every two
+            seconds: a long review must not crowd the run's event backlog,
+            and a retried attempt restarts the count (code review 2026-10-09)."""
+            if ev.get("kind") == "retry":
+                counts.update(facts=0, calcs=0, last=0.0)
+                report("retrying")
+                return
+            counts["calcs" if ev.get("kind") == "calc" else "facts"] += 1
+            now = time.monotonic()
+            if now - counts["last"] >= 2.0:
+                counts["last"] = now
+                report("tool", kind=ev.get("kind"), detail=ev.get("detail"),
+                       facts=counts["facts"], calcs=counts["calcs"])
+
         try:
-            review = review_fn(editor_llm, final_state, lint, errata.render(all_errata), callbacks=callbacks)
+            review = review_fn(editor_llm, final_state, lint, errata.render(all_errata), callbacks=callbacks,
+                               on_step=on_step)
         except editor.EditorUnavailable as exc:
             logger.error("editor unavailable for %s: %s", ticker, exc)
             status, hold_reason = "held", "editor_unavailable"
+            report("held")
             passes.append({"pass": attempt, "lint": lint, "editor": None, "error": str(exc)[:300]})
             break
         patched, applied = editor.apply_patch(final_state.get("report_digest") or {}, review["digest_patch"],
@@ -96,12 +128,18 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
         if forced and forced.upper() == str(ticker).upper():
             # Staging test hook: exercise the hold and release path.
             status, hold_reason = "held", "forced hold for testing (quality_force_hold_ticker)"
+            report("held")
             break
+        report("checked", facts=counts["facts"], calcs=counts["calcs"])
+        if applied:
+            report("patched", fields=len(applied))
         if not open_flags and not review["decision_flags"] and not unpatched:
             status = "clean" if attempt == 0 else "revised"
+            report("passed", status=status)
             break
         if attempt == max_revisions:
             status = "held"
+            report("held")
             hold_reason = review.get("hold_reason") or (
                 "Errors in figures the call relies on were still there after "
                 + ("the revision." if max_revisions == 1 else f"{max_revisions} revisions."))
@@ -120,6 +158,7 @@ def run_with_quality(graph, ticker: str, trade_date, editor_llm, *, on_progress=
         revision = {"fact_sheet": final_state.get("fact_sheet"), "fact_sheet_text": final_state.get("fact_sheet_text"),
                     "review_errata": errata.render(all_errata), "kept": kept}
         passes[-1]["restart"] = {"analysts": sorted(rerun), "from": first_later, "kept": sorted(kept)}
+        report("revising", corrections=len(all_errata), restart_from=first_later, analysts=sorted(rerun))
         if on_progress:
             on_progress(f"Revision {attempt + 1}", {}, final_state)
 

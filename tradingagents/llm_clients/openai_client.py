@@ -327,9 +327,12 @@ class OpenAIClient(BaseLLMClient):
             if key not in self.kwargs:
                 continue
             if key == "reasoning_effort" and self.provider == "openrouter":
-                # OpenRouter takes effort as {"reasoning": {"effort": …}} for
-                # every model family it serves.
-                llm_kwargs.setdefault("extra_body", {})["reasoning"] = {"effort": self.kwargs[key]}
+                # OpenRouter takes effort as {"reasoning": {"effort": …}}. Not
+                # for Claude: there it switches on extended thinking (not
+                # Anthropic's effort setting), and a tool loop must then echo
+                # thinking blocks that ChatOpenAI drops (code review 2026-10-09).
+                if not self.model.startswith("anthropic/"):
+                    llm_kwargs.setdefault("extra_body", {})["reasoning"] = {"effort": self.kwargs[key]}
                 continue
             if key == "reasoning_effort" and not _supports_reasoning_effort(self.model):
                 continue
