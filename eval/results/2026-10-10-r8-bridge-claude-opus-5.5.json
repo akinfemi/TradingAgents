@@ -1,0 +1,145 @@
+{
+ "label": "r8-bridge",
+ "date": "2026-10-10",
+ "judge_model": "anthropic/claude-opus-5.5",
+ "judge_version": 2,
+ "settings": {
+  "env": {
+   "LLM_PROVIDER": "anthropic",
+   "DEEP_THINK_LLM": "openai/gpt-6.1-sol",
+   "QUICK_THINK_LLM": "openai/gpt-6-luna",
+   "PRICE_VENDOR": "tiingo",
+   "QUICK_THINK_PROVIDER": "openrouter",
+   "DEEP_THINK_PROVIDER": "openrouter",
+   "EDITOR_PROVIDER": "openrouter",
+   "EDITOR_LLM": "anthropic/claude-sonnet-5.5"
+  },
+  "config": {
+   "llm_provider": "anthropic",
+   "deep_think_llm": "openai/gpt-6.1-sol",
+   "quick_think_llm": "openai/gpt-6-luna",
+   "price_vendor": "tiingo",
+   "max_debate_rounds": 1,
+   "max_risk_discuss_rounds": 1
+  },
+  "trade_date": "2026-10-10"
+ },
+ "reports": 3,
+ "tickers": [
+  "KO",
+  "GOOGL",
+  "MSFT"
+ ],
+ "missing_runs": [],
+ "judge_failed": [],
+ "mean_scores": {
+  "arithmetic": 5.0,
+  "misread": 4.33,
+  "consistency": 3.67,
+  "context": 4.67,
+  "unsupported": 4.33,
+  "reasoning": 3.33,
+  "presentation": 3.67
+ },
+ "mean_score": 4.14,
+ "load_bearing_errors": 2,
+ "load_bearing_checked": 1,
+ "reports_with_load_bearing_errors": 1,
+ "verdicts": {
+  "publish": 0,
+  "publish_with_fixes": 2,
+  "do_not_publish": 1
+ },
+ "pipeline_cost_usd": 1.28,
+ "judge_cost_usd": 1.28,
+ "median_seconds": 333,
+ "rows": [
+  {
+   "ticker": "KO",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 5,
+    "misread": 5,
+    "consistency": 4,
+    "context": 4,
+    "unsupported": 5,
+    "reasoning": 4,
+    "presentation": 3
+   },
+   "mean_score": 4.29,
+   "load_bearing_errors": 0,
+   "load_bearing_checked": 0,
+   "checks": {
+    "facts": 2,
+    "calcs": 7,
+    "rounds": 4
+   },
+   "minor_errors": 9,
+   "verdict": "publish_with_fixes",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.4194,
+   "judge_cost_usd": 0.4908,
+   "seconds": 333,
+   "summary": "Every price-derived figure, valuation multiple and step of the target, bear and bull math checks out against the fact sheet ($81.92 / $77.09 / $89.76, -6.96%, revenue hurdle about $13.97B). The quarter-old data caveat, the market-closed weekend session and the October 20 earnings date are handled well throughout. The remaining problems are minor: false precision, a mis-cited moving-average gap, internal pipeline wording, repetitive risk reviews, and a target that leans heavily on the multiple returning to its median."
+  },
+  {
+   "ticker": "GOOGL",
+   "rating": "Sell",
+   "scores": {
+    "arithmetic": 5,
+    "misread": 4,
+    "consistency": 3,
+    "context": 5,
+    "unsupported": 4,
+    "reasoning": 4,
+    "presentation": 4
+   },
+   "mean_score": 4.14,
+   "load_bearing_errors": 0,
+   "load_bearing_checked": 0,
+   "checks": {
+    "facts": 2,
+    "calcs": 7,
+    "rounds": 4
+   },
+   "minor_errors": 7,
+   "verdict": "publish_with_fixes",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.4358,
+   "judge_cost_usd": 0.398,
+   "seconds": 338,
+   "summary": "The report is numerically sound: the target math, upside, exit-trigger levels, segment hurdles and ATR references all recompute, and it handles the non-operating earnings distortion, the marketable-equity holdings and the unexplained balance-sheet jumps carefully. The remaining issues are minor: the target gives full credit to marketable equity despite the manager's instruction, some figures are tagged or rounded inconsistently, the case for multiple compression is thin, and the risk sections repeat each other."
+  },
+  {
+   "ticker": "MSFT",
+   "rating": "Overweight",
+   "scores": {
+    "arithmetic": 5,
+    "misread": 4,
+    "consistency": 4,
+    "context": 5,
+    "unsupported": 4,
+    "reasoning": 2,
+    "presentation": 4
+   },
+   "mean_score": 4.0,
+   "load_bearing_errors": 2,
+   "load_bearing_checked": 1,
+   "checks": {
+    "facts": 2,
+    "calcs": 6,
+    "rounds": 3
+   },
+   "minor_errors": 6,
+   "verdict": "do_not_publish",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.4241,
+   "judge_cost_usd": 0.388,
+   "seconds": 331,
+   "summary": "The report is carefully sourced: the price facts, segment data, revenue hurdles, ATR-based stop distances and the EV/EBIT target math ($577.50 base, $483.74 bear, $598.55 bull) all check, and context (session timing, 52-week high, estimated Oct-28 earnings) is handled well. However, the exit-trigger design does not hold. The FCF threshold is presented as having 10% headroom but is breached by a quarter only ~3.5% below the latest one once the TTM is rolled, and the downgrade requires all three conditions at once; both need reworking before publication, along with minor fixes (basic vs diluted shares, an internal agent name, sentiment labels)."
+  }
+ ]
+}

@@ -1,0 +1,271 @@
+{
+ "label": "r8-b2",
+ "date": "2026-10-10",
+ "judge_model": "anthropic/claude-opus-5.5",
+ "judge_version": 2,
+ "settings": {
+  "env": {
+   "LLM_PROVIDER": "anthropic",
+   "DEEP_THINK_LLM": "openai/gpt-6.1-sol",
+   "QUICK_THINK_LLM": "openai/gpt-6-luna",
+   "PRICE_VENDOR": "tiingo",
+   "QUICK_THINK_PROVIDER": "openrouter",
+   "DEEP_THINK_PROVIDER": "openrouter",
+   "EDITOR_PROVIDER": "openrouter",
+   "EDITOR_LLM": "anthropic/claude-sonnet-5.5"
+  },
+  "config": {
+   "llm_provider": "anthropic",
+   "deep_think_llm": "openai/gpt-6.1-sol",
+   "quick_think_llm": "openai/gpt-6-luna",
+   "price_vendor": "tiingo",
+   "max_debate_rounds": 1,
+   "max_risk_discuss_rounds": 1
+  },
+  "trade_date": "2026-10-10"
+ },
+ "reports": 7,
+ "tickers": [
+  "ONDS",
+  "MSFT",
+  "NVDA",
+  "JPM",
+  "MRNA",
+  "XOM",
+  "COST"
+ ],
+ "missing_runs": [
+  "O",
+  "TSM",
+  "ON",
+  "NOW",
+  "F"
+ ],
+ "judge_failed": [],
+ "mean_scores": {
+  "arithmetic": 4.57,
+  "misread": 4.14,
+  "consistency": 3.57,
+  "context": 4.71,
+  "unsupported": 4.0,
+  "reasoning": 2.71,
+  "presentation": 3.71
+ },
+ "mean_score": 3.92,
+ "load_bearing_errors": 14,
+ "load_bearing_checked": 8,
+ "reports_with_load_bearing_errors": 5,
+ "verdicts": {
+  "publish": 0,
+  "publish_with_fixes": 3,
+  "do_not_publish": 4
+ },
+ "pipeline_cost_usd": 3.33,
+ "judge_cost_usd": 2.41,
+ "median_seconds": 340,
+ "rows": [
+  {
+   "ticker": "ONDS",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 4,
+    "misread": 4,
+    "consistency": 3,
+    "context": 5,
+    "unsupported": 4,
+    "reasoning": 2,
+    "presentation": 3
+   },
+   "mean_score": 3.57,
+   "load_bearing_errors": 1,
+   "load_bearing_checked": 0,
+   "checks": {
+    "facts": 4,
+    "calcs": 6,
+    "rounds": 4
+   },
+   "minor_errors": 8,
+   "verdict": "do_not_publish",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.4235,
+   "judge_cost_usd": 0.4443,
+   "seconds": 313,
+   "summary": "The report's figures are accurate and well sourced: the price target, bear and bull values, the $117.5M checkpoint, the runway and the dilution figures all reconcile with the fact sheet, and the report handles the session clock, low-base hurdles and the non-operating TTM profit carefully. It can't go out as is because one exit trigger is set against a meaningless prior-year FCF base that it calls 'seasonal', and that needs replacing along with a few smaller fixes: inconsistent reconsideration levels, a basic-vs-diluted share mislabel, a small percentage slip, unsupported competitor product claims, and agent labels left in the text."
+  },
+  {
+   "ticker": "MSFT",
+   "rating": "Overweight",
+   "scores": {
+    "arithmetic": 5,
+    "misread": 4,
+    "consistency": 4,
+    "context": 4,
+    "unsupported": 4,
+    "reasoning": 2,
+    "presentation": 5
+   },
+   "mean_score": 4.0,
+   "load_bearing_errors": 1,
+   "load_bearing_checked": 1,
+   "checks": {
+    "facts": 2,
+    "calcs": 10,
+    "rounds": 3
+   },
+   "minor_errors": 5,
+   "verdict": "do_not_publish",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.4844,
+   "judge_cost_usd": 0.3967,
+   "seconds": 365,
+   "summary": "The arithmetic, price-derived figures, valuation bridge and target math are accurate and well sourced throughout: the $584.08 target, the $382.66 bear and $673.74 bull values, 9.2% upside, ATR-based levels, and the growth and hurdle figures all check out. However, the bear key point, the ruling and the manager's rationale rest on a 'quarterly margins keep declining' reading that ignores seasonality (Q4 margin actually rose 44.9%\u219245.1% year on year), and there are smaller problems: inconsistent tranche splits, competitor products brought in from outside the inputs, and an unanchored target multiple."
+  },
+  {
+   "ticker": "NVDA",
+   "rating": "Overweight",
+   "scores": {
+    "arithmetic": 5,
+    "misread": 5,
+    "consistency": 4,
+    "context": 5,
+    "unsupported": 4,
+    "reasoning": 3,
+    "presentation": 4
+   },
+   "mean_score": 4.29,
+   "load_bearing_errors": 2,
+   "load_bearing_checked": 1,
+   "checks": {
+    "facts": 1,
+    "calcs": 10,
+    "rounds": 3
+   },
+   "minor_errors": 7,
+   "verdict": "publish_with_fixes",
+   "quality_status": "revised",
+   "revisions": 1,
+   "pipeline_cost_usd": 0.8409,
+   "judge_cost_usd": 0.382,
+   "seconds": 587,
+   "summary": "The figures hold up: every price fact, fundamental figure and calculation I checked against the fact sheet is right, including the 92.5% Data Center share, the $103.525B revenue hurdle, the $24.90B rise in debt and the $249.52/$221.20/$287.76 target math. The main weaknesses are a trade plan whose stop-to-target payoff is below 1:1 and goes unaddressed, a target multiple asserted rather than argued, and minor inconsistencies in the conditional-tranche conditions and in presentation, all of which should be fixed before release."
+  },
+  {
+   "ticker": "JPM",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 3,
+    "misread": 4,
+    "consistency": 4,
+    "context": 5,
+    "unsupported": 4,
+    "reasoning": 2,
+    "presentation": 3
+   },
+   "mean_score": 3.57,
+   "load_bearing_errors": 5,
+   "load_bearing_checked": 2,
+   "checks": {
+    "facts": 0,
+    "calcs": 8,
+    "rounds": 2
+   },
+   "minor_errors": 5,
+   "verdict": "do_not_publish",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.3468,
+   "judge_cost_usd": 0.3133,
+   "seconds": 292,
+   "summary": "The figures match the fact sheet and the technical, session and earnings-date context are handled well, with only rounding slips (EPS growth 46.9%, tangible equity 6.3%) and some leaked pipeline artifacts. But the headline $311.38 target rests on an unexplained 15.6% sequential EPS drop and a simply 'selected' 12.5x multiple, which contradicts the ruling's own view that durable earnings could support the stock, so the Underweight call is not derived from the evidence."
+  },
+  {
+   "ticker": "MRNA",
+   "rating": "Sell",
+   "scores": {
+    "arithmetic": 5,
+    "misread": 4,
+    "consistency": 4,
+    "context": 5,
+    "unsupported": 4,
+    "reasoning": 4,
+    "presentation": 4
+   },
+   "mean_score": 4.29,
+   "load_bearing_errors": 0,
+   "load_bearing_checked": 0,
+   "checks": {
+    "facts": 1,
+    "calcs": 9,
+    "rounds": 3
+   },
+   "minor_errors": 8,
+   "verdict": "publish_with_fixes",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.4352,
+   "judge_cost_usd": 0.1523,
+   "seconds": 378,
+   "summary": "Every price-derived claim, the target math ($112.90 / $28.90 / $163.65, and $102.15 diluted), the scenario growth rates and the reassessment thresholds check out against the fact sheet. The report reads the session, earnings date, comparison base and liquidity flags correctly. Remaining issues are minor: the 20x target multiple has no stated anchor, the ruling and the portfolio decision disagree on whether a target exists and on exit timing, a few figures come from outside the inputs, and a few presentation slips need fixing before publication."
+  },
+  {
+   "ticker": "XOM",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 5,
+    "misread": 3,
+    "consistency": 2,
+    "context": 4,
+    "unsupported": 4,
+    "reasoning": 2,
+    "presentation": 3
+   },
+   "mean_score": 3.29,
+   "load_bearing_errors": 5,
+   "load_bearing_checked": 4,
+   "checks": {
+    "facts": 5,
+    "calcs": 8,
+    "rounds": 3
+   },
+   "minor_errors": 5,
+   "verdict": "do_not_publish",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.3991,
+   "judge_cost_usd": 0.3911,
+   "seconds": 320,
+   "summary": "Every number I recalculated checks out against the fact sheet and price data, including the target and scenario values, the revenue hurdles and the debt figures. But the underweight rests on an EV/sales multiple that is chosen rather than derived, and on a sizing rule that maps a P/E ratio directly onto position size. The FCF exit trigger also contradicts the ruling's $17.03B hurdle and sits so low that a sharp quarter-on-quarter decline would clear it, so the call is not ready to publish."
+  },
+  {
+   "ticker": "COST",
+   "rating": "Overweight",
+   "scores": {
+    "arithmetic": 5,
+    "misread": 5,
+    "consistency": 4,
+    "context": 5,
+    "unsupported": 4,
+    "reasoning": 4,
+    "presentation": 4
+   },
+   "mean_score": 4.43,
+   "load_bearing_errors": 0,
+   "load_bearing_checked": 0,
+   "checks": {
+    "facts": 2,
+    "calcs": 9,
+    "rounds": 2
+   },
+   "minor_errors": 6,
+   "verdict": "publish_with_fixes",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.3993,
+   "judge_cost_usd": 0.3348,
+   "seconds": 340,
+   "summary": "The report's numbers are accurate: the price target math (46.67\u00d7 on a rolled-forward $9.51B of net income over 443.1M shares gives $1,001.65, 5.78% upside), the next-quarter revenue tests (10% growth needs 3.14% sequential growth on the 84/112-day basis; the 5% downgrade test implies \u22121.55%), the margin-sensitivity, net-cash and U.S.-share figures, and every technical reading all match the fact sheet. Session timing and the next earnings date are handled correctly, and the remaining problems are minor: a $901.90 vs $901.95 stop mismatch, a stop only 1 ATR below the bottom of the widened entry zone, unclear sizing direction in the exit triggers, and internal agent names in the text readers see."
+  }
+ ]
+}

@@ -1,0 +1,271 @@
+{
+ "label": "r8-a",
+ "date": "2026-10-10",
+ "judge_model": "anthropic/claude-opus-5.5",
+ "judge_version": 2,
+ "settings": {
+  "env": {
+   "LLM_PROVIDER": "anthropic",
+   "DEEP_THINK_LLM": "openai/gpt-6.1-sol",
+   "QUICK_THINK_LLM": "openai/gpt-6-luna",
+   "PRICE_VENDOR": "tiingo",
+   "QUICK_THINK_PROVIDER": "openrouter",
+   "DEEP_THINK_PROVIDER": "openrouter",
+   "EDITOR_PROVIDER": "openrouter",
+   "EDITOR_LLM": "anthropic/claude-sonnet-5.5"
+  },
+  "config": {
+   "llm_provider": "anthropic",
+   "deep_think_llm": "openai/gpt-6.1-sol",
+   "quick_think_llm": "openai/gpt-6-luna",
+   "price_vendor": "tiingo",
+   "max_debate_rounds": 1,
+   "max_risk_discuss_rounds": 1
+  },
+  "trade_date": "2026-10-10"
+ },
+ "reports": 7,
+ "tickers": [
+  "ONDS",
+  "MSFT",
+  "NVDA",
+  "JPM",
+  "MRNA",
+  "XOM",
+  "COST"
+ ],
+ "missing_runs": [
+  "O",
+  "TSM",
+  "ON",
+  "NOW",
+  "F"
+ ],
+ "judge_failed": [],
+ "mean_scores": {
+  "arithmetic": 4.14,
+  "misread": 4.14,
+  "consistency": 3.43,
+  "context": 4.29,
+  "unsupported": 4.0,
+  "reasoning": 2.57,
+  "presentation": 3.57
+ },
+ "mean_score": 3.74,
+ "load_bearing_errors": 14,
+ "load_bearing_checked": 10,
+ "reports_with_load_bearing_errors": 6,
+ "verdicts": {
+  "publish": 0,
+  "publish_with_fixes": 2,
+  "do_not_publish": 5
+ },
+ "pipeline_cost_usd": 3.61,
+ "judge_cost_usd": 2.61,
+ "median_seconds": 389,
+ "rows": [
+  {
+   "ticker": "ONDS",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 4,
+    "misread": 4,
+    "consistency": 3,
+    "context": 5,
+    "unsupported": 4,
+    "reasoning": 3,
+    "presentation": 4
+   },
+   "mean_score": 3.86,
+   "load_bearing_errors": 1,
+   "load_bearing_checked": 0,
+   "checks": {
+    "facts": 2,
+    "calcs": 7,
+    "rounds": 3
+   },
+   "minor_errors": 8,
+   "verdict": "publish_with_fixes",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.45,
+   "judge_cost_usd": 0.363,
+   "seconds": 389,
+   "summary": "The figures from the fact sheet, the technicals and the EV/Sales target math ($6.07 base, $5.09 bear, $7.29 bull, \u22129.8% return) all check out, and the report handles the warrant-driven TTM profit, the cash-to-investments shift, the one-off base-quarter margins and the antidilutive overhang well. Before publication it needs a single 2026Q3 revenue hurdle across sections ($92.2M vs $93.9M), a coherent ruling sentence, the 830.7% slip corrected to 829.7%, and the unsourced competitor product claims removed."
+  },
+  {
+   "ticker": "MSFT",
+   "rating": "Overweight",
+   "scores": {
+    "arithmetic": 4,
+    "misread": 4,
+    "consistency": 3,
+    "context": 4,
+    "unsupported": 4,
+    "reasoning": 2,
+    "presentation": 4
+   },
+   "mean_score": 3.57,
+   "load_bearing_errors": 3,
+   "load_bearing_checked": 3,
+   "checks": {
+    "facts": 3,
+    "calcs": 9,
+    "rounds": 3
+   },
+   "minor_errors": 8,
+   "verdict": "do_not_publish",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.4279,
+   "judge_cost_usd": 0.4401,
+   "seconds": 395,
+   "summary": "The figures are sourced carefully and the arithmetic is almost entirely right: capex, FCF, the non-operating swing, the EV bridge, the target and scenarios, the ATR distances and the entry band all recompute, and the technicals match ground truth. The price target, though, comes entirely from expanding the multiple to the historical median with operating income held flat, which contradicts both the 'earnings-driven' thesis and the ruling's no-expansion instruction. The base case is also a stretch 3.55% sequential hurdle, and the margin exit trigger ignores fiscal-Q1 seasonality, so the rating's logic needs reworking before publication."
+  },
+  {
+   "ticker": "NVDA",
+   "rating": "Overweight",
+   "scores": {
+    "arithmetic": 2,
+    "misread": 3,
+    "consistency": 3,
+    "context": 5,
+    "unsupported": 4,
+    "reasoning": 4,
+    "presentation": 3
+   },
+   "mean_score": 3.43,
+   "load_bearing_errors": 1,
+   "load_bearing_checked": 1,
+   "checks": {
+    "facts": 2,
+    "calcs": 10,
+    "rounds": 3
+   },
+   "minor_errors": 8,
+   "verdict": "do_not_publish",
+   "quality_status": "revised",
+   "revisions": 1,
+   "pipeline_cost_usd": 0.8112,
+   "judge_cost_usd": 0.378,
+   "seconds": 553,
+   "summary": "The report is mostly accurate and well grounded: price levels, the earnings hurdles (77.2% / 82.5%), the stop and entry band, and the target math ($247.44, 7.9% upside) all recompute, and it handles the weekend session and the next earnings date correctly. However, the research-manager ruling wrongly 'corrects' the right 294% debt increase to an invented 263%, the news section misreads 2026Q1 long-term debt, and the stop level and target net-cash bridge are not consistent across sections, so it needs fixes before release."
+  },
+  {
+   "ticker": "JPM",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 5,
+    "misread": 4,
+    "consistency": 4,
+    "context": 2,
+    "unsupported": 4,
+    "reasoning": 2,
+    "presentation": 4
+   },
+   "mean_score": 3.57,
+   "load_bearing_errors": 5,
+   "load_bearing_checked": 2,
+   "checks": {
+    "facts": 2,
+    "calcs": 11,
+    "rounds": 4
+   },
+   "minor_errors": 3,
+   "verdict": "do_not_publish",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.3705,
+   "judge_cost_usd": 0.3603,
+   "seconds": 375,
+   "summary": "The figures are accurately sourced and the arithmetic checks out throughout, and the analysts are careful about bank-specific caveats (OCF, EV, regulatory capital). But the price target and upgrade trigger don't hold: they freeze TTM EPS across an earnings report that will mechanically raise it, use an arbitrary 13x multiple and 1.05 growth factor, and time execution to a Nov 3 date when JPM likely reports in mid-October."
+  },
+  {
+   "ticker": "MRNA",
+   "rating": "Sell",
+   "scores": {
+    "arithmetic": 4,
+    "misread": 5,
+    "consistency": 2,
+    "context": 4,
+    "unsupported": 4,
+    "reasoning": 2,
+    "presentation": 3
+   },
+   "mean_score": 3.43,
+   "load_bearing_errors": 3,
+   "load_bearing_checked": 3,
+   "checks": {
+    "facts": 2,
+    "calcs": 10,
+    "rounds": 3
+   },
+   "minor_errors": 5,
+   "verdict": "do_not_publish",
+   "quality_status": "revised",
+   "revisions": 1,
+   "pipeline_cost_usd": 0.7683,
+   "judge_cost_usd": 0.3989,
+   "seconds": 471,
+   "summary": "The report reads the facts accurately and its arithmetic checks out: the technicals, the EV bridge, runway, dilution, the flat-revenue hurdle, and the scenario values all reconcile with the fact sheet. However, the $178.98 target rests on a 30x EV/sales multiple that nothing supports and that contradicts the ruling's own 10.47x anchor, and the key operating-cash-flow exit trigger is stated two different ways across sections, so it is not fit to publish until the valuation and thresholds are fixed."
+  },
+  {
+   "ticker": "XOM",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 5,
+    "misread": 5,
+    "consistency": 5,
+    "context": 5,
+    "unsupported": 4,
+    "reasoning": 3,
+    "presentation": 4
+   },
+   "mean_score": 4.43,
+   "load_bearing_errors": 0,
+   "load_bearing_checked": 0,
+   "checks": {
+    "facts": 0,
+    "calcs": 8,
+    "rounds": 2
+   },
+   "minor_errors": 4,
+   "verdict": "publish_with_fixes",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.3551,
+   "judge_cost_usd": 0.3113,
+   "seconds": 290,
+   "summary": "Every price-derived and fundamental figure I checked matches the fact sheet. This includes the target, bear and bull values ($153.70, $115.13, $176.12), the \u22129.0% gap from the close, the 40%/2.92% revenue hurdle, the debt totals and the P/E sensitivity, and the report correctly handles the weekend session, the estimated Q3 date and the trap of a growth threshold cleared by standing still. The main weakness is the base-case 1.80x EV/sales multiple, which is asserted rather than derived and only loosely linked to the FCF-moderation thesis; with a few minor wording and sourcing fixes, the note is publishable."
+  },
+  {
+   "ticker": "COST",
+   "rating": "Overweight",
+   "scores": {
+    "arithmetic": 5,
+    "misread": 4,
+    "consistency": 4,
+    "context": 5,
+    "unsupported": 4,
+    "reasoning": 2,
+    "presentation": 3
+   },
+   "mean_score": 3.86,
+   "load_bearing_errors": 1,
+   "load_bearing_checked": 1,
+   "checks": {
+    "facts": 5,
+    "calcs": 7,
+    "rounds": 2
+   },
+   "minor_errors": 11,
+   "verdict": "do_not_publish",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.4275,
+   "judge_cost_usd": 0.3563,
+   "seconds": 387,
+   "summary": "The arithmetic is clean throughout: margins, net cash, the growth hurdles and the target math all recompute, and the price-derived claims match the computed facts. However, the price target rests on an assumed 48x multiple that the ruling explicitly ruled out (it said to anchor on the 46.67x median). The target also holds EPS flat, so it is disconnected from the growth thesis, and the report needs that repaired along with several minor misreads, threshold inconsistencies and presentation leaks before publication."
+  }
+ ]
+}

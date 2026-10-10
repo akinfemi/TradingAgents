@@ -1,0 +1,85 @@
+{
+ "label": "r8-ko",
+ "date": "2026-10-10",
+ "judge_model": "anthropic/claude-opus-5.5",
+ "judge_version": 2,
+ "settings": {
+  "env": {
+   "LLM_PROVIDER": "anthropic",
+   "DEEP_THINK_LLM": "openai/gpt-6.1-sol",
+   "QUICK_THINK_LLM": "openai/gpt-6-luna",
+   "PRICE_VENDOR": "tiingo",
+   "QUICK_THINK_PROVIDER": "openrouter",
+   "DEEP_THINK_PROVIDER": "openrouter",
+   "EDITOR_PROVIDER": "openrouter",
+   "EDITOR_LLM": "anthropic/claude-sonnet-5.5"
+  },
+  "config": {
+   "llm_provider": "anthropic",
+   "deep_think_llm": "openai/gpt-6.1-sol",
+   "quick_think_llm": "openai/gpt-6-luna",
+   "price_vendor": "tiingo",
+   "max_debate_rounds": 1,
+   "max_risk_discuss_rounds": 1
+  },
+  "trade_date": "2026-10-10"
+ },
+ "reports": 1,
+ "tickers": [
+  "KO"
+ ],
+ "missing_runs": [],
+ "judge_failed": [],
+ "mean_scores": {
+  "arithmetic": 5.0,
+  "misread": 4.0,
+  "consistency": 2.0,
+  "context": 5.0,
+  "unsupported": 4.0,
+  "reasoning": 4.0,
+  "presentation": 3.0
+ },
+ "mean_score": 3.86,
+ "load_bearing_errors": 1,
+ "load_bearing_checked": 1,
+ "reports_with_load_bearing_errors": 1,
+ "verdicts": {
+  "publish": 0,
+  "publish_with_fixes": 0,
+  "do_not_publish": 1
+ },
+ "pipeline_cost_usd": 0.47,
+ "judge_cost_usd": 0.5,
+ "median_seconds": 340,
+ "rows": [
+  {
+   "ticker": "KO",
+   "rating": "Underweight",
+   "scores": {
+    "arithmetic": 5,
+    "misread": 4,
+    "consistency": 2,
+    "context": 5,
+    "unsupported": 4,
+    "reasoning": 4,
+    "presentation": 3
+   },
+   "mean_score": 3.86,
+   "load_bearing_errors": 1,
+   "load_bearing_checked": 1,
+   "checks": {
+    "facts": 2,
+    "calcs": 11,
+    "rounds": 4
+   },
+   "minor_errors": 7,
+   "verdict": "do_not_publish",
+   "quality_status": "clean",
+   "revisions": 0,
+   "pipeline_cost_usd": 0.4657,
+   "judge_cost_usd": 0.5049,
+   "seconds": 340,
+   "summary": "The report is carefully grounded: every price, valuation and fundamental figure I checked matches the fact sheet; it handles the weekend session, the quarter-old statements and the October 20 earnings date correctly; and the target, the bull and bear cases and the ATR levels all recompute correctly. It still fails the bar because the price-target bridge adds back AFS debt securities that the historical EV multiples leave out, which inflates the $82.52 target by about $0.60 (it should be about $81.92). Smaller problems include a one-sided debt bear point, misattributed citations in the bear section, process chatter, false precision and repetitive risk reviews; all are easy to fix before the note is resubmitted."
+  }
+ ]
+}
