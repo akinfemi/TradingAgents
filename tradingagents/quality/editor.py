@@ -173,7 +173,9 @@ Then submit the review with `submit_review`:
 - hold_reason: one line explaining why the report should not be published if it could not be fixed, else empty.
 - lint_dismissed: every lint finding (by id, e.g. L3) you checked with the tools and found not to be an error, with the reason (the derivation that reproduces the figure, or why the text is not a claim). A dismissed finding no longer counts against publication; a lint finding you neither dismiss nor fix does.
 
-Lint findings are leads, not verdicts: confirm or dismiss each one with the tools."""
+Lint findings are leads, not verdicts: confirm or dismiss each one with the tools.
+
+Coverage: before you submit, check every figure in the digest's headline, theses, key points, ruling and exit triggers, and every step of the price target's math, with `fact` or `calc`, even when the lint report has no leads. An empty lint report means no automatic flags, not that the report is right. A review that submits before checking these is sent back."""
 
 
 def _transcript(state: dict) -> str:
@@ -224,6 +226,32 @@ def _submit_args(reply) -> dict | None:
     return None
 
 
+# The submit is sent back once when the review has checked fewer figures than
+# the reader-facing text and the target math hold (capped): 2026-10-10, a
+# staging review checked only the target math and published clean.
+MIN_CHECKS_CAP = 10
+_COVERED_FIELDS = ("headline", "bull_thesis", "bear_thesis", "bull_points", "bear_points", "ruling", "exit_triggers")
+
+
+def required_checks(state: dict) -> int:
+    """How many fact/calc checks a review must make before its submit is
+    accepted: the money and percent figures in the digest's reader-facing
+    fields and the target math, at most MIN_CHECKS_CAP."""
+    from tradingagents.quality.lint import figures
+
+    digest = state.get("report_digest") or {}
+    texts = []
+    for name in _COVERED_FIELDS:
+        value = digest.get(name)
+        if isinstance(value, list):
+            texts += [json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else str(v) for v in value]
+        elif value:
+            texts.append(str(value))
+    texts.append(str((state.get("portfolio_decision") or {}).get("target_math") or ""))
+    count = sum(1 for t in texts for f in figures(t) if f.kind in ("usd", "pct", "x"))
+    return min(count, MIN_CHECKS_CAP)
+
+
 def _reply_text(reply) -> str:
     content = getattr(reply, "content", "")
     if isinstance(content, list):
@@ -231,7 +259,8 @@ def _reply_text(reply) -> str:
     return str(content or "").strip()[:300]
 
 
-def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None, trail: list | None = None) -> dict:
+def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None, trail: list | None = None,
+              min_checks: int = 0) -> dict:
     """One review attempt. ``trail`` (when given) receives the working record
     for admin: per round, whether it was forced, any text, and each tool call
     with its arguments and a short result (2026-10-10: a staging review that
@@ -272,6 +301,8 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None, trai
         block["cache_control"] = {"type": "ephemeral"}
     messages = [HumanMessage(content=[block])]
     must_submit = False
+    checks = 0
+    sent_back = False
     for round_no in range(1, MAX_TOOL_ROUNDS + 1):
         left = MAX_TOOL_ROUNDS - round_no
         is_forced = must_submit or left == 0
@@ -291,8 +322,18 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None, trai
         for call in calls:
             name, args = call["name"], call.get("args") or {}
             if name == "submit_review":
+                if checks < min_checks and not sent_back and not is_forced:
+                    # Once per review: a forced submit is always accepted.
+                    sent_back = True
+                    reason = (f"Not accepted: you have checked {checks} figure(s); the headline, theses, points, "
+                              f"ruling, exit triggers and target math hold at least {min_checks}. Check them with "
+                              "fact or calc, then call submit_review again.")
+                    step["calls"].append({"tool": "submit_review", "accepted": False, "reason": reason})
+                    messages.append(ToolMessage(content=reason, tool_call_id=call["id"]))
+                    continue
                 step["calls"].append({"tool": "submit_review"})
                 return args
+            checks += 1
             result = calc(args.get("expression", "")) if name == "calc" else fact(facts, args.get("key", ""))
             step["calls"].append({"tool": name, "args": str(args.get("expression") if name == "calc"
                                                              else args.get("key", ""))[:160],
@@ -358,12 +399,13 @@ def review(llm, state: dict, lint_report: dict, earlier_errata: str = "", callba
     Raises EditorUnavailable when the budget runs out."""
     facts = Facts(state.get("fact_sheet"))
     prompt = build_prompt(state, lint_report, earlier_errata)
+    min_checks = required_checks(state)
     started, delay, last = time.monotonic(), 5.0, None
     failed_attempts: list[str] = []
     while True:
         trail: list = []
         try:
-            out = _run_once(llm, prompt, facts, callbacks, on_step, trail)
+            out = _run_once(llm, prompt, facts, callbacks, on_step, trail, min_checks)
             for key in ("findings", "digest_patch", "decision_flags"):
                 out[key] = _as_list(out.get(key))
             # A review that breaks the schema is a failed attempt, retried
@@ -379,7 +421,8 @@ def review(llm, state: dict, lint_report: dict, earlier_errata: str = "", callba
             out["trail"] = trail
             out["checks"] = {"facts": sum(1 for r in trail for c in r["calls"] if c["tool"] == "fact"),
                              "calcs": sum(1 for r in trail for c in r["calls"] if c["tool"] == "calc"),
-                             "rounds": len(trail), "failed_attempts": failed_attempts}
+                             "rounds": len(trail), "failed_attempts": failed_attempts, "required": min_checks,
+                             "sent_back": any(c.get("accepted") is False for r in trail for c in r["calls"])}
             return out
         except Exception as exc:  # noqa: BLE001 — retried, then a hold
             if is_fatal(exc):

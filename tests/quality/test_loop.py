@@ -782,7 +782,64 @@ def test_the_review_keeps_its_working_record():
             return Bound()
 
     out = editor.review(Fake(), {"fact_sheet": SHEET}, {"flags": []}, sleep=lambda _s: None)
-    assert out["checks"] == {"facts": 1, "calcs": 1, "rounds": 2, "failed_attempts": []}
+    assert out["checks"] == {"facts": 1, "calcs": 1, "rounds": 2, "failed_attempts": [], "required": 0,
+                             "sent_back": False}
     first = out["trail"][0]["calls"]
     assert first[0] == {"tool": "fact", "args": "revenue.2026Q2", "result": first[0]["result"]} and "83800000" in first[0]["result"]
     assert first[1]["result"] == "4" and out["trail"][1]["calls"] == [{"tool": "submit_review"}]
+
+
+@pytest.mark.unit
+def test_a_review_that_checks_too_little_is_sent_back_once():
+    """2026-10-10: a staging review recalculated the target four times, looked
+    up nothing, and published clean. The submit is sent back once."""
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    st = {"fact_sheet": SHEET, "report_digest": {
+        "headline": "Underweight: revenue of $83.8M and margins of 43.1% fall short",
+        "bull_points": [{"title": "Cash", "detail": "Cash of $1.38B covers 14.8 quarters"}]},
+        "portfolio_decision": {"target_math": "5 × $335.2M = $1,676.0M EV; ÷ 570.6M = $5.35"}}
+    assert editor.required_checks(st) >= 4
+    seen = []
+    replies = [AIMessage(content="", tool_calls=[{"name": "submit_review", "args": {"findings": []}, "id": "s1"}]),
+               AIMessage(content="", tool_calls=[{"name": "fact", "args": {"key": "revenue.2026Q2"}, "id": str(i)}
+                                                 for i in range(6)]),
+               AIMessage(content="", tool_calls=[{"name": "submit_review", "args": {"findings": []}, "id": "s2"}])]
+
+    class Bound:
+        def invoke(self, messages, config=None):
+            seen.append(messages[-1])
+            return replies.pop(0)
+
+    class Fake:
+        model_name = "x"
+
+        def bind_tools(self, _tools, **_kw):
+            return Bound()
+
+    out = editor.review(Fake(), st, {"flags": []}, sleep=lambda _s: None)
+    sent_back = seen[1]
+    assert isinstance(sent_back, ToolMessage) and sent_back.content.startswith("Not accepted")
+    assert out["checks"]["sent_back"] is True and out["checks"]["facts"] == 6 and not replies
+
+
+@pytest.mark.unit
+def test_a_second_thin_submit_is_accepted_so_the_review_cannot_loop():
+    from langchain_core.messages import AIMessage
+
+    st = {"fact_sheet": SHEET, "report_digest": {"headline": "Revenue of $83.8M, margin 43.1%, cash $1.38B, 14.8x"}}
+    replies = [AIMessage(content="", tool_calls=[{"name": "submit_review", "args": {"findings": []}, "id": "a"}]),
+               AIMessage(content="", tool_calls=[{"name": "submit_review", "args": {"findings": []}, "id": "b"}])]
+
+    class Bound:
+        def invoke(self, messages, config=None):
+            return replies.pop(0)
+
+    class Fake:
+        model_name = "x"
+
+        def bind_tools(self, _tools, **_kw):
+            return Bound()
+
+    out = editor.review(Fake(), st, {"flags": []}, sleep=lambda _s: None)
+    assert out["checks"]["rounds"] == 2 and not replies
