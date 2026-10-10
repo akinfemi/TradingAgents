@@ -76,7 +76,10 @@ LINES: list[tuple[str, str, tuple[str, ...]]] = [
     ("equity_securities_fv", "stock", ("EquitySecuritiesFvNi", "EquitySecuritiesFvNiCurrent")),
     ("equity_nonmarketable", "stock", ("EquitySecuritiesWithoutReadilyDeterminableFairValueAmount",)),
     ("lt_investments", "stock", ("OtherLongTermInvestments", "LongTermInvestments")),
-    ("debt", "stock", ("LongTermDebt", "LongTermDebtNoncurrent", "DebtInstrumentCarryingAmount")),
+    # XOM files only LongTermDebtAndCapitalLeaseObligations (noncurrent, with
+    # finance leases): without it its EV counted current debt alone.
+    ("debt", "stock", ("LongTermDebt", "LongTermDebtNoncurrent", "DebtInstrumentCarryingAmount",
+                       "LongTermDebtAndCapitalLeaseObligations")),
     ("debt_current", "stock", ("LongTermDebtCurrent", "DebtCurrent")),
     # Debt filed by instrument instead of as a total (REITs: Realty Income
     # tags NotesPayable, LoansPayable, CommercialPaper; eval 2026-10-09).
@@ -518,7 +521,7 @@ def parse_labels(label_xml: str) -> dict[str, str]:
     return out
 
 
-def parse_segments(instance_xml: str, quarter_ends: list[str], labels: dict | None = None) -> list[dict]:
+def parse_segments(instance_xml: str, quarter_ends: list[str] | None, labels: dict | None = None) -> list[dict]:
     """[{axis, member, label, concept, end, value}] for 3-month periods ending
     on ``quarter_ends``, one dimension (a segment or a product line) each."""
     import xml.etree.ElementTree as ET
@@ -542,7 +545,7 @@ def parse_segments(instance_xml: str, quarter_ends: list[str], labels: dict | No
             continue
         start = next((p.text for p in ctx.iter() if p.tag.endswith("}startDate")), None)
         end = next((p.text for p in ctx.iter() if p.tag.endswith("}endDate")), None)
-        if not start or not end or end not in quarter_ends:
+        if not start or not end or (quarter_ends is not None and end not in quarter_ends):
             continue
         days = (date.fromisoformat(end) - date.fromisoformat(start)).days
         span = "Q" if 60 <= days <= 115 else "FY" if 300 <= days <= 400 else None
@@ -577,7 +580,10 @@ def fetch_segments(cik: str, filing: dict, quarter_ends: list[str]) -> list[dict
 
     from tradingagents.dataflows.vendors.sec_edgar import _user_agent
 
-    path = Path(get_config()["data_cache_dir"]) / "sec_edgar" / f"segments-{filing['accn']}.json"
+    # Every period the filing carries is cached and the ends filtered on read:
+    # a cache filtered to one caller's ends starved the next caller (review,
+    # 2026-10-10: the hurdle fetch cached year-ago filings with one end).
+    path = Path(get_config()["data_cache_dir"]) / "sec_edgar" / f"segments-all-{filing['accn']}.json"
     if path.exists():
         return [r for r in json.loads(path.read_text(encoding="utf-8")) if r["end"] in quarter_ends]
     base = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{filing['accn'].replace('-', '')}/"
@@ -592,7 +598,7 @@ def fetch_segments(cik: str, filing: dict, quarter_ends: list[str]) -> list[dict
             labels = parse_labels(lab.text)
     except Exception:  # noqa: BLE001 — names fall back to the member's code
         labels = {}
-    rows = parse_segments(response.text, quarter_ends, labels)
+    rows = parse_segments(response.text, None, labels)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(rows), encoding="utf-8")
-    return rows
+    return [r for r in rows if r["end"] in quarter_ends]

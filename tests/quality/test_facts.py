@@ -631,3 +631,23 @@ def test_next_report_hurdle_and_ev_ebita():
     assert got["next_base.revenue"] == 0.7e9
     # EV $99B ÷ (TTM operating income $0.8B + amortization $0.2B)
     assert got["ev_ebita.ttm"] == pytest.approx(99e9 / 1.0e9)
+
+
+@pytest.mark.unit
+def test_quarter_length_scaling_for_the_hurdle():
+    # COST: a 16-week fiscal Q4 against a 12-week Q1 base.
+    ends = ["2025-05-11", "2025-08-31", "2025-11-23", "2026-02-15", "2026-05-10", "2026-08-30"]
+    scale, note = facts._length_scale("2026-08-30", "2025-11-23", ends)
+    assert 0.7 < scale < 0.8 and "scaled" in note
+    assert facts._length_scale("2026-06-30", "2025-09-30", ["2025-06-30", "2025-09-30", "2025-12-31",
+                                                            "2026-03-31", "2026-06-30"]) == (1.0, "")
+
+
+@pytest.mark.unit
+def test_current_debt_alone_is_not_called_total_debt():
+    st, values, frame, ends = _synthetic()
+    cols = [facts._q_label(e, ends, st.fy_end) for e in ends[-5:]]
+    values["debt"] = {}                                   # no long-term debt tagged (XOM)
+    values["debt_current"] = {ends[-2]: 14.5e9, ends[-1]: 10.1e9}
+    _, flags = facts._derived(st, cols, values, 100.0, ends[-1])
+    assert not any(f.startswith("Total debt moved") for f in flags)

@@ -525,12 +525,13 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
     base_end = ends[i_end - 3] if i_end >= 3 else None
     if base_end and v("revenue", base_end) and v("revenue", end):
         base_cal = _q_label(base_end, ends, st.fy_end).calendar
+        scale, note = _length_scale(end, base_end, ends)
         add(f"next_base.revenue", v("revenue", base_end), "usd", "next_report_year_ago_revenue",
             f"revenue of {base_cal} [revenue.{base_cal}], the year-ago quarter of the next report", base_cal)
-        add("next_hurdle.revenue_flat", (v("revenue", end) / v("revenue", base_end) - 1) * 100, "pct",
+        add("next_hurdle.revenue_flat", (v("revenue", end) * scale / v("revenue", base_end) - 1) * 100, "pct",
             "next_report_growth_if_flat",
             f"year-on-year growth the next report shows if revenue only holds at {cal}'s level: "
-            f"[revenue.{cal}] ÷ [revenue.{base_cal}] − 1", base_cal)
+            f"[revenue.{cal}] ÷ [revenue.{base_cal}] − 1{note}", base_cal)
 
     # ---- R8: what the investments are --------------------------------------------
     # GOOGL 2026Q2: $186.6B of "marketable securities" held $99.5B of debt
@@ -631,9 +632,11 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
                 )
         def total_debt(at):
             # Long-term plus current: a bond moving to "current" is not a move
-            # (COST 2026Q3: −31% long-term, +9% in total).
-            parts = (v("debt", at), v("debt_current", at))
-            return sum(x for x in parts if x is not None) if any(x is not None for x in parts) else None
+            # (COST 2026Q3: −31% long-term, +9% in total). Without the long-term
+            # part it is not a total (XOM's current debt read as "Total debt").
+            if v("debt", at) is None:
+                return None
+            return v("debt", at) + (v("debt_current", at) or 0)
         for concept, label, now_, then_ in (
                 ("debt", "Total debt", total_debt(end), total_debt(prev)),
                 ("equity", "Stockholders' equity", v("equity", end), v("equity", prev)),
@@ -983,7 +986,13 @@ def _add_segments(sheet: FactSheet, st: edgar_ext.Statements, trade_date: str) -
     """Segment and product-line figures from the latest 10-Q/10-K's
     dimensional XBRL (R4b). Never raises."""
     try:
-        filing = next((r for r in edgar_ext.filings(st.submissions) if r["filed"] <= trade_date), None)
+        # The filing for the latest quarter shown, so segments line up with the
+        # statements (KO: the newest 10-Q was not yet in the structured data).
+        last_end = sheet.quarters[-1].end if sheet.quarters else None
+        candidates = [r for r in edgar_ext.filings(st.submissions) if r["filed"] <= trade_date]
+        filing = next((r for r in candidates if last_end and
+                       abs((date.fromisoformat(r["period"]) - date.fromisoformat(last_end)).days) <= 10),
+                      candidates[0] if candidates else None)
         if filing is None:
             return
         ends = list({*st.quarter_ends, *st.year_ends})
@@ -995,6 +1004,17 @@ def _add_segments(sheet: FactSheet, st: edgar_ext.Statements, trade_date: str) -
             _add_segment_hurdles(sheet, st, trade_date, facts)
     except Exception as exc:  # noqa: BLE001
         logger.info("fact sheet: segments for %s skipped: %s", sheet.ticker, exc)
+
+
+def _length_scale(end: str, base_end: str, ends: list[str]) -> tuple[float, str]:
+    """(factor putting the latest quarter on the base quarter's length, note).
+    COST's 16-week fiscal Q4 against a 12-week Q1 read +42% "if flat"."""
+    days = (date.fromisoformat(end) - edgar_ext.quarter_start(end, ends)).days + 1
+    base_days = (date.fromisoformat(base_end) - edgar_ext.quarter_start(base_end, ends)).days + 1
+    if abs(days - base_days) <= 10 or days <= 0:
+        return 1.0, ""
+    return base_days / days, (f", the latest quarter scaled from {days} to {base_days} days (the quarters differ "
+                              "in length; a seasonal business can still differ)")
 
 
 def _add_segment_hurdles(sheet: FactSheet, st: edgar_ext.Statements, trade_date: str, latest: list[Fact]) -> None:
@@ -1014,6 +1034,7 @@ def _add_segment_hurdles(sheet: FactSheet, st: edgar_ext.Statements, trade_date:
     rows = [r for r in edgar_ext.fetch_segments(st.cik, base_filing, [base_end])
             if r["end"] == base_end and r["span"] == "Q" and r["concept"] == "revenue"]
     now = {f.key.split(".")[1]: f for f in latest if f.key.startswith("seg_revenue.") and f.period == last_cal}
+    scale, note = _length_scale(ends[-1], base_end, ends)
     for r in rows:
         slug = _slug(r["label"])
         if slug not in now or not r["value"]:
@@ -1023,10 +1044,10 @@ def _add_segment_hurdles(sheet: FactSheet, st: edgar_ext.Statements, trade_date:
                                 concept=f"{kind}: {r['label']}", source="sec_xbrl",
                                 filed=f"{base_filing['filed']} {base_filing['accn']}"))
         sheet.facts.append(Fact(
-            key=f"seg_hurdle.{slug}", value=round((now[slug].value / r["value"] - 1) * 100, 2), unit="pct",
+            key=f"seg_hurdle.{slug}", value=round((now[slug].value * scale / r["value"] - 1) * 100, 2), unit="pct",
             period=base_cal, concept=f"{r['label']}: next report's growth if flat", source="computed",
             derivation=f"[seg_revenue.{slug}.{last_cal}] ÷ [seg_revenue.{slug}.{base_cal}] − 1: the year-on-year "
-                       f"growth the next report shows if {r['label']} only holds at {last_cal}'s level"))
+                       f"growth the next report shows if {r['label']} only holds at {last_cal}'s level{note}"))
 
 
 def _confirm_from_news(nxt: dict, ticker: str, trade_date: str, identity: dict,
@@ -1144,6 +1165,24 @@ def build(ticker: str, trade_date: str, run_started_at: str | None = None, asset
                 sheet.flags.append(f"The latest filing ({form}, period to {report}, filed {filed_on}) is missing from "
                                    f"the statements: every quarterly figure here ends at {last_end}. Say the figures "
                                    "are a quarter old wherever recency matters, and don't call them the latest quarter.")
+                # The "next report" and its comparison base would point at a
+                # quarter already reported (KO): drop the hurdles, roll the
+                # calendar on to the quarter after the filed one.
+                sheet.facts = [f for f in sheet.facts
+                               if not f.key.startswith(("next_base.", "next_hurdle.", "seg_hurdle."))]
+                nxt = (sheet.calendar or {}).get("earnings_next")
+                if nxt:
+                    after = date.fromisoformat(report) + timedelta(days=91)
+                    est = date.fromisoformat(nxt["date"]) + timedelta(days=91)
+                    nxt.update(covers=f"the quarter to about {after.isoformat()}", date=est.isoformat(),
+                               period_end_approx=after.isoformat(), status="estimated",
+                               basis=f"the {form} for the period to {report} was filed {filed_on}; a quarter on "
+                                     "from the earlier estimate", note=None)
+                    nxt.pop("note", None)
+                    for f in sheet.facts:
+                        if f.key == "earnings.next":
+                            f.value, f.period = est.isoformat(), nxt["covers"]
+                            f.derivation = f"estimated: {nxt['basis']}"
     if st is not None and not sheet.quarters and not any(u.startswith("SEC statements") for u in sheet.unavailable):
         # A 20-F filer (US GAAP or IFRS) files no quarterly statements: say so,
         # or the agents are told the sheet holds the company's statements.
