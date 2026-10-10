@@ -45,7 +45,7 @@ from tradingagents.agents.rating import RATING_BANDS, band_text, tier_for_move
 
 BLOCKING_KINDS = {"cited_mismatch", "unknown_key", "direction", "misattributed", "arithmetic",
                   "period_mismatch", "concept_mismatch", "data_policy", "target_direction", "target_math",
-                  "target_range", "target_tier", "social_claim", "process_language"}
+                  "target_range", "target_tier", "target_anchor", "social_claim", "process_language"}
 
 LOAD_BEARING_FIELDS = {
     "digest.headline", "digest.bull_thesis", "digest.bear_thesis", "digest.ruling",
@@ -1424,6 +1424,21 @@ def check_trigger_headroom(digest: dict) -> list[LintFlag]:
     return flags
 
 
+_RATING_NAME = re.compile(r"\b(?:buy|overweight|hold|underweight|sell)\b", re.I)
+
+
+def check_trigger_moves(digest: dict) -> list[LintFlag]:
+    """A trigger names the rating it moves to (R8 MSFT one-pager: "reduced
+    conviction and a lower rating" in the Moves-to column). A lead."""
+    flags = []
+    for t in digest.get("exit_triggers") or []:
+        if isinstance(t, dict) and t.get("moves_to") and not _RATING_NAME.search(str(t["moves_to"])):
+            flags.append(LintFlag("minor", "trigger_moves", "digest", "digest.exit_triggers",
+                                  f"{t.get('metric') or t.get('title')}: moves to {t['moves_to']}"[:300],
+                                  "name the rating the trigger moves the call to ('to Hold')"))
+    return flags
+
+
 def check_target_debt(decision: dict | None, facts: Facts) -> list[LintFlag]:
     """Check 6 (part): the target math subtracts the debt EV uses (long-term plus
     current). GOOGL review: EV used $100.17B, the target $98.17B."""
@@ -1561,6 +1576,92 @@ def check_target(decision: dict | None, facts: Facts) -> list[LintFlag]:
     return flags
 
 
+_ANCHOR = re.compile(r"\b([a-z_]+?)(?:_hist\.(low|p25|median|p75|high)|\.ttm)\b")
+
+
+def _anchor(raw) -> tuple[str, str] | None:
+    """(key, metric) of an anchor however it is written: "pe_hist.median",
+    "[F:pe_hist.median]", "PE_hist.median (15.4x)", "pe.ttm"."""
+    m = _ANCHOR.search(str(raw or "").lower())
+    return (m.group(0), m.group(1)) if m else None
+
+
+def check_target_anchor(decision: dict | None, facts: Facts) -> list[LintFlag]:
+    """Check 6 (part, R8): each case's multiple is the value of the fact-sheet
+    anchor it names — a point in the stock's own valuation history or today's
+    multiple — on one basis, and the target math applies it. Eval 2026-10-10:
+    6 of 21 load-bearing errors were target multiples "simply assumed" although
+    the history was on the sheet.
+
+    Strict only when the sheet holds a history for the target's metric: then
+    every case names an anchor. Without one (P/E on a stock whose earnings
+    history is too short, operating P/E), a named anchor must still match its
+    value, but the cases may rest on stated assumptions."""
+    if not decision or not facts or not isinstance(decision.get("price_target"), (int, float)):
+        return []
+    hist = {k.split("_hist.")[0] for k in facts.by_key if "_hist." in k and not k.endswith(".percentile")}
+    if not hist:
+        return []
+    today = sorted(k for k, f in facts.by_key.items()
+                   if k.endswith(".ttm") and f.get("unit") == "x" and isinstance(f.get("value"), (int, float)))
+    flags: list[LintFlag] = []
+
+    def flag(quote: str, problem: str, keys: list[str] | None = None, severity: str = "load_bearing",
+             kind: str = "target_anchor") -> None:
+        flags.append(LintFlag(severity, kind, "portfolio_manager", "pm.price_target", quote[:300], problem,
+                              keys or []))
+
+    target = _anchor(decision.get("target_anchor"))
+    # Relaxed only for a real key on the sheet whose metric has no history
+    # (operating P/E, EV/EBITA); a missing or invented anchor is the
+    # assumed-multiple case itself.
+    strict = not (target is not None and target[1] not in hist
+                  and isinstance(facts.value(target[0]), (int, float)))
+    menu_metrics = [target[1]] if target is not None and target[1] in hist else sorted(hist)
+    menu = "; ".join(f"{m}_hist.{{low,p25,median,p75,high}}" for m in menu_metrics)
+    now_keys = ", ".join(k for k in today if k.split(".")[0] in menu_metrics) or "none on this sheet"
+
+    used, mults = set(), {}
+    for case, mult_key, anchor_key, value_key in (
+            ("target", "target_multiple", "target_anchor", "price_target"),
+            ("bear", "bear_multiple", "bear_anchor", "bear_case_value"),
+            ("bull", "bull_multiple", "bull_anchor", "bull_case_value")):
+        mult = decision.get(mult_key)
+        if not isinstance(mult, (int, float)):
+            if strict and isinstance(decision.get(value_key), (int, float)):
+                flag(f"{case} value {decision.get(value_key)} with no {mult_key}",
+                     f"state the {case} case's multiple and the anchor it equals ({mult_key}, {anchor_key}): "
+                     f"{menu}, or today's ({now_keys})")
+            continue
+        mults[case] = mult
+        named = _anchor(decision.get(anchor_key))
+        value = facts.value(named[0]) if named else None
+        if not named or not isinstance(value, (int, float)):
+            if strict:
+                flag(f"{case} multiple {mult:g}x, anchor {decision.get(anchor_key) or '(none)'}",
+                     f"the {case} multiple names no anchor on the fact sheet: use one of {menu}, or today's "
+                     f"multiple ({now_keys})")
+            continue
+        used.add(named[1])
+        if abs(mult - value) > max(0.02 * abs(value), 0.05):
+            flag(f"{case} multiple {mult:g}x, anchor {named[0]} = {value:g}x",
+                 f"the {case} multiple is not its anchor's value: {named[0]} is {value:g}x", [named[0]])
+    if len(used) > 1:
+        flag(f"anchors on {', '.join(sorted(used))}", "the cases' multiples are on different bases: use one")
+    t = mults.get("target")
+    if t is not None and (("bear" in mults and mults["bear"] > t) or ("bull" in mults and mults["bull"] < t)):
+        flag(f"bear {mults.get('bear')}x, target {t:g}x, bull {mults.get('bull')}x",
+             "the bear multiple sits below the target's and the bull above it", severity="minor",
+             kind="target_anchor_order")
+    math_text = decision.get("target_math") or ""
+    math_text = math_text if isinstance(math_text, str) else " ".join(_digest_strings(math_text))
+    bare = [float(n) for n in re.findall(
+        r"(?<![\d.,$A-Za-z])(\d+(?:\.\d+)?)(?![\d.,]*\s*(?:%|bn\b|billion|million|thousand|[bmkt]\b))", math_text, re.I)]
+    if t is not None and math_text and not any(abs(n - t) <= max(0.02 * abs(t), 0.05) for n in bare):
+        flag(math_text, f"the target math doesn't apply the target multiple {t:g}x")
+    return flags
+
+
 # ---- running it --------------------------------------------------------------------------------
 
 
@@ -1645,6 +1746,7 @@ def lint_state(state: dict) -> dict:
                          if f.severity != "style")
             flags.extend(unsupported_figures(text, facts, "digest", f"digest.{key}"))
     flags.extend(check_target(state.get("portfolio_decision"), facts))
+    flags.extend(check_target_anchor(state.get("portfolio_decision"), facts))
     digest = state.get("report_digest") or {}
     rating = (state.get("portfolio_decision") or {}).get("rating") or state.get("final_rating")
     rating = rating if isinstance(rating, str) and rating.title() in RATING_BANDS else None
@@ -1654,6 +1756,7 @@ def lint_state(state: dict) -> dict:
     flags.extend(check_margin_wording(digest))
     flags.extend(check_trigger_mix(digest))
     flags.extend(check_trigger_headroom(digest))
+    flags.extend(check_trigger_moves(digest))
     flags.extend(check_one_off_bases(state))
     flags.extend(check_target_debt(state.get("portfolio_decision"), facts))
     # Two figures in one sentence are one finding, not two.

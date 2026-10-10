@@ -651,3 +651,9 @@ def test_current_debt_alone_is_not_called_total_debt():
     values["debt_current"] = {ends[-2]: 14.5e9, ends[-1]: 10.1e9}
     _, flags = facts._derived(st, cols, values, 100.0, ends[-1])
     assert not any(f.startswith("Total debt moved") for f in flags)
+
+
+def test_quantile_interpolates_between_points():
+    vals = [1.0, 2.0, 3.0, 4.0, 5.0]
+    assert facts._quantile(vals, 0.25) == 2.0 and facts._quantile(vals, 0.75) == 4.0
+    assert facts._quantile([1.0, 2.0], 0.25) == pytest.approx(1.25)

@@ -822,7 +822,8 @@ def _valuation_history(st: edgar_ext.Statements, values: dict, frame: pd.DataFra
         span = f"{series[0][0]}–{series[-1][0]}"
         how = (f"{what} at each of {len(series)} quarter ends {span} (the close at the quarter end, adjusted for "
                "splits only; that quarter's weighted shares on the same split basis; cash and debt then)")
-        for stat, value in (("low", vals[0]), ("median", median(vals)), ("high", vals[-1])):
+        for stat, value in (("low", vals[0]), ("p25", _quantile(vals, 0.25)), ("median", median(vals)),
+                            ("p75", _quantile(vals, 0.75)), ("high", vals[-1])):
             facts.append(Fact(key=f"{metric}_hist.{stat}", value=round(value, 2), unit="x", period=span,
                               concept=f"{metric}_history_{stat}", source="computed", derivation=how))
         now = current.get(metric)
@@ -833,6 +834,15 @@ def _valuation_history(st: edgar_ext.Statements, values: dict, frame: pd.DataFra
                               derivation=f"share of the {len(series)} quarter-end values at or below today's "
                                          f"{now:.2f}x, in percent (today's uses the cover-page share count)"))
     return facts
+
+
+def _quantile(vals: list[float], q: float) -> float:
+    """Linear-interpolated quantile of sorted values (the anchors between the
+    low and the median, and the median and the high)."""
+    pos = (len(vals) - 1) * q
+    lo = math.floor(pos)
+    hi = min(lo + 1, len(vals) - 1)
+    return vals[lo] + (vals[hi] - vals[lo]) * (pos - lo)
 
 
 def _macro_facts(trade_date: str) -> list[Fact]:
@@ -1412,14 +1422,20 @@ def render(sheet: FactSheet) -> str:
 
     hist = [f for f in sheet.facts if "_hist." in f.key]
     if hist:
-        out.append("\n### Valuation history (the stock's own range; argue a target multiple against it)")
+        out.append("\n### Valuation history (the stock's own range: each case's multiple is one of these "
+                   "anchors, or today's multiple)")
         for metric, label in (("ev_sales", "EV / TTM sales"), ("ev_ebit", "EV / TTM operating income"),
                               ("pe", "P/E on TTM GAAP EPS")):
             got = {f.key.split(".")[1]: f for f in hist if f.key.startswith(f"{metric}_hist.")}
             if "median" not in got:
                 continue
-            line = (f"- {label}: low [F:{metric}_hist.low] {_fmt(got['low'])}, median [F:{metric}_hist.median] "
-                    f"{_fmt(got['median'])}, high [F:{metric}_hist.high] {_fmt(got['high'])}")
+            line = f"- {label}: " + ", ".join(
+                f"{name} [F:{metric}_hist.{stat}] {_fmt(got[stat])}"
+                for stat, name in (("low", "low"), ("p25", "25th percentile"), ("median", "median"),
+                                   ("p75", "75th percentile"), ("high", "high")) if stat in got)
+            now_key = f"{metric}.ttm"
+            if sheet.get(now_key):
+                line += f"; today [F:{now_key}] {_fmt(sheet.get(now_key))}"
             if "percentile" in got:
                 line += f"; today at percentile {got['percentile'].value:.0f} [F:{metric}_hist.percentile]"
             out.append(line + f" ({got['median'].derivation})")

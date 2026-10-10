@@ -320,7 +320,7 @@ class PortfolioDecision(BaseModel):
         default=None,
         description=(
             "How the target is derived, e.g. 'EV/Sales on TTM revenue', "
-            "'EV/Sales on run-rate revenue', 'P/E on TTM EPS'."
+            "'P/E on TTM EPS', 'EV/operating income on TTM'."
         ),
     )
     valuation_inputs: list[str] = Field(
@@ -350,6 +350,16 @@ class PortfolioDecision(BaseModel):
     target_multiple: float | None = Field(default=None, description="The multiple the target applies, e.g. 18.0.")
     bear_multiple: float | None = Field(default=None, description="The bear case's multiple.")
     bull_multiple: float | None = Field(default=None, description="The bull case's multiple.")
+    # R8 (eval 2026-10-10: 6 of 21 load-bearing errors were multiples "simply
+    # assumed"): each case's multiple is a named point on the fact sheet, and
+    # the linter holds a multiple that isn't the value of the key it names.
+    target_anchor: str | None = Field(
+        default=None,
+        description="The fact-sheet key target_multiple equals: a valuation-history anchor "
+                    "('pe_hist.median', 'ev_sales_hist.p25', ...) or today's multiple ('pe.ttm').",
+    )
+    bear_anchor: str | None = Field(default=None, description="The fact-sheet key bear_multiple equals.")
+    bull_anchor: str | None = Field(default=None, description="The fact-sheet key bull_multiple equals.")
     base_case: str | None = Field(
         default=None,
         description="What has to be true for the target, in one sentence with its number, e.g. 'Cloud growth holds "
@@ -391,7 +401,7 @@ class PortfolioDecision(BaseModel):
 
     @field_validator("executive_summary", "investment_thesis", "valuation_method", "target_math",
                      "execution_timing", "time_horizon", "valuation_rationale", "base_case", "bear_case",
-                     "bull_case", mode="before")
+                     "bull_case", "target_anchor", "bear_anchor", "bull_anchor", mode="before")
     @classmethod
     def _text(cls, v):
         return _coerce_text(v)
@@ -422,6 +432,12 @@ def render_pm_decision(decision: PortfolioDecision, rating_horizon: str | None =
         parts.extend(["", f"**Valuation Inputs**: {', '.join(decision.valuation_inputs)}"])
     if decision.target_math:
         parts.extend(["", f"**Target Math**: {decision.target_math}"])
+    cases = [f"{name} {m:g}x [{a}]" if a else f"{name} {m:g}x"
+             for name, m, a in (("target", decision.target_multiple, decision.target_anchor),
+                                ("bear", decision.bear_multiple, decision.bear_anchor),
+                                ("bull", decision.bull_multiple, decision.bull_anchor)) if m is not None]
+    if cases:
+        parts.extend(["", f"**Multiples**: {'; '.join(cases)}"])
     if decision.bear_case_value is not None:
         parts.extend(["", f"**Bear Case Value**: {decision.bear_case_value}"])
     if decision.bull_case_value is not None:
@@ -556,8 +572,9 @@ class ExitTrigger(DigestPoint):
     check: str | None = Field(default=None, description="When it is next checked, e.g. 'Q3 report, Nov 4'.")
     moves_to: str | None = Field(
         default=None,
-        description="Which way the rating would move if it fires, e.g. 'toward Hold' or 'to Sell'. A condition "
-                    "that only confirms the call is not a trigger.",
+        description="The rating it would move to if it fires, named: 'to Hold', 'to Sell'. Never 'lower "
+                    "conviction', 'standard exposure' or a sizing change. A condition that only confirms the call "
+                    "is not a trigger.",
     )
 
 

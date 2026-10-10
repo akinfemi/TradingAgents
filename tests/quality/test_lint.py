@@ -778,3 +778,120 @@ def test_an_explicit_growth_formula_is_checked():
     assert check_formulas("($8.3B / $7.6B − 1) × 100 = 8.8%", "pm", "pm") == []
     assert check_formulas(good, "fundamentals_analyst", "fundamentals_report") == []
     assert check_formulas("($93.20B [F:x] / $77.67B − 1) = 20.0%", "pm", "pm") == []
+
+
+# ---- R8: target multiples from named anchors ----------------------------------------------------
+
+from tradingagents.quality.lint import check_target_anchor, check_trigger_moves  # noqa: E402
+
+
+def _anchor_sheet(**extra):
+    keys = {"pe_hist.low": 11.2, "pe_hist.p25": 13.0, "pe_hist.median": 15.4, "pe_hist.p75": 17.1,
+            "pe_hist.high": 21.0, "pe_hist.percentile": 90, "pe.ttm": 18.4, "pe_operating.ttm": 14.0,
+            "ev_sales.ttm": 1.97, "ev_sales_hist.median": 1.37, **extra}
+    return Facts({"facts": [{"key": k, "value": v, "unit": "ratio" if k.endswith("percentile") else "x"}
+                            for k, v in keys.items() if v is not None]})
+
+
+_GOOD = {"price_target": 140.0, "target_multiple": 15.4, "target_anchor": "pe_hist.median",
+         "target_math": "15.4x × $9.10 = $140.14", "bear_case_value": 102.0, "bear_multiple": 11.2,
+         "bear_anchor": "pe_hist.low", "bull_case_value": 167.0, "bull_multiple": 18.4, "bull_anchor": "pe.ttm"}
+
+
+def test_anchored_multiples_pass():
+    assert check_target_anchor(_GOOD, _anchor_sheet()) == []
+
+
+def test_assumed_multiple_is_held():
+    # XOM, eval 2026-10-10: "17.00x ... simply assumed".
+    flags = check_target_anchor({**_GOOD, "target_multiple": 17.0, "target_math": "17x × $9.10 = $154.70"},
+                                _anchor_sheet())
+    assert [f.kind for f in flags] == ["target_anchor"] and flags[0].blocking and "15.4" in flags[0].expected
+
+
+def test_missing_or_unknown_anchor_is_held():
+    sheet = _anchor_sheet()
+    assert check_target_anchor({**_GOOD, "target_anchor": None}, sheet)
+    assert check_target_anchor({**_GOOD, "target_anchor": "my view"}, sheet)
+    assert check_target_anchor({**_GOOD, "target_multiple": None}, sheet)       # a target with no multiple
+    assert check_target_anchor({**_GOOD, "bear_multiple": None}, sheet)         # a bear value with no multiple
+
+
+def test_anchor_written_loosely_still_reads():
+    for written in ("[F:pe_hist.median]", "PE_hist.median (15.4x)", "F:pe_hist.median"):
+        assert check_target_anchor({**_GOOD, "target_anchor": written}, _anchor_sheet()) == [], written
+    assert check_target_anchor({**_GOOD, "target_multiple": 15.4 * 1.015}, _anchor_sheet()) == []
+
+
+def test_anchors_on_two_bases_are_held():
+    d = {**_GOOD, "bear_case_value": 90.0, "bear_multiple": 1.37, "bear_anchor": "ev_sales_hist.median"}
+    assert [f.expected for f in check_target_anchor(d, _anchor_sheet())] == \
+        ["the cases' multiples are on different bases: use one"]
+
+
+def test_method_without_a_history_rests_on_stated_cases():
+    # Operating P/E has no history: today's anchor for the target, assumptions for the cases.
+    d = {"price_target": 130.0, "target_multiple": 14.0, "target_anchor": "pe_operating.ttm",
+         "target_math": "14.0x × $9.30 = $130.20", "bear_case_value": 110.0, "bear_multiple": 12.0,
+         "bull_case_value": 150.0, "bull_multiple": 16.0}
+    assert check_target_anchor(d, _anchor_sheet()) == []
+    # ...but a named anchor still has to match.
+    assert check_target_anchor({**d, "target_multiple": 16.0}, _anchor_sheet())
+
+
+def test_no_target_no_anchor_check():
+    assert check_target_anchor({"price_target": None, "bear_multiple": 12.0, "bull_multiple": 20.0},
+                               _anchor_sheet()) == []
+
+
+def test_no_history_no_anchor_check():
+    sheet = Facts({"facts": [{"key": "pe.ttm", "value": 18.4, "unit": "x"}]})
+    assert check_target_anchor({"price_target": 156.0, "target_multiple": 17.0}, sheet) == []
+
+
+def test_menu_offers_only_todays_keys_on_the_sheet():
+    flags = check_target_anchor({**_GOOD, "target_anchor": None}, _anchor_sheet(**{"pe.ttm": None}))
+    assert flags and "pe.ttm" not in flags[0].expected
+
+
+def test_math_that_uses_another_multiple_is_held():
+    flags = check_target_anchor({**_GOOD, "target_math": "22x × $6.37 = $140.14"}, _anchor_sheet())
+    assert [f.expected for f in flags] == ["the target math doesn't apply the target multiple 15.4x"]
+
+
+def test_cases_out_of_order_are_a_lead():
+    d = {**_GOOD, "bear_multiple": 17.1, "bear_anchor": "pe_hist.p75"}
+    flags = check_target_anchor(d, _anchor_sheet())
+    assert [(f.kind, f.severity) for f in flags] == [("target_anchor_order", "minor")]
+
+
+def test_trigger_moves_names_a_rating():
+    digest = {"exit_triggers": [{"title": "a", "metric": "FCF", "moves_to": "Reduced conviction and a lower rating"},
+                                {"title": "b", "metric": "Margin", "moves_to": "to Hold"}]}
+    assert [f.quote.split(":")[0] for f in check_trigger_moves(digest)] == ["FCF"]
+
+
+def test_math_check_reads_the_multiple_wherever_it_sits():
+    for math in ("EPS $9.10 × 15.4 = $140.14", "$9.10×15.4=$140.14", "P/E of 15.4 on EPS $9.10 = $140.14",
+                 "multiple 15.4; $9.10*15.4=$140.14", "15.40× $9.10 = $140.14"):
+        assert check_target_anchor({**_GOOD, "target_math": math}, _anchor_sheet()) == [], math
+    # A dollar or billions figure that happens to equal the multiple doesn't count.
+    assert check_target_anchor({**_GOOD, "target_math": "22x on $15.4B = $140.14"}, _anchor_sheet())
+
+
+def test_invented_or_missing_anchor_keeps_the_check_strict():
+    for anchor in ("forward_pe.ttm", "peer_pe.ttm", None):
+        d = {**_GOOD, "target_multiple": 22.0, "target_anchor": anchor, "target_math": "22x × $6.37 = $140.14",
+             "bear_multiple": 18.0, "bear_anchor": None, "bull_multiple": 26.0, "bull_anchor": None}
+        assert len(check_target_anchor(d, _anchor_sheet())) >= 3, anchor
+    d = {**_GOOD, "target_anchor": None, "valuation_inputs": ["pe_operating.ttm", "pe.ttm"],
+         "target_multiple": 22.0, "target_math": "22x × $6.37 = $140.14"}
+    assert check_target_anchor(d, _anchor_sheet())
+
+
+def test_a_quarter_label_is_not_the_multiple():
+    d = {**_GOOD, "price_target": 28.0, "target_multiple": 3.0, "target_anchor": "ev_sales_hist.median",
+         "bear_multiple": None, "bull_multiple": None, "bear_case_value": None, "bull_case_value": None,
+         "target_math": "Q3 revenue $10.0B × 2.8 = $28.0B"}
+    sheet = _anchor_sheet(**{"ev_sales_hist.median": 3.0})
+    assert [f.expected for f in check_target_anchor(d, sheet)] == ["the target math doesn't apply the target multiple 3x"]
