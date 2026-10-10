@@ -609,7 +609,8 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
         add(f"sti_equity.{cal}", sti_now - afs, "usd", "marketable_equity_in_short_term_investments",
             f"short-term investments [sti.{cal}] − debt securities available for sale [afs_debt.{cal}]", f"at {end}")
         add(f"cash_debt_securities.{cal}", (v("cash", end) or 0) + afs, "usd", "cash_and_debt_securities",
-            f"cash [cash.{cal}] + debt securities [afs_debt.{cal}]: the cash-like part", f"at {end}")
+            f"cash [cash.{cal}] + debt securities [afs_debt.{cal}]: the cash-like part (context only: EV and "
+            f"the target bridge use [cash_sti.{cal}])", f"at {end}")
     # ---- flags: facts the stages must address --------------------------------
     oi, ni, nonop = v("operating_income", end), v("net_income", end), v("non_operating", end)
     if oi is not None and ni is not None and (oi < 0) != (ni < 0):

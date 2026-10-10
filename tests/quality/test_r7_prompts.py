@@ -73,6 +73,7 @@ def test_pm_prompt_carries_the_rating_bands_anchor_and_catalyst_rules():
     assert "target move between -12% and -4%" in prompt          # Underweight's band
     assert 'never "I"' in prompt                                  # voice
     assert "target_anchor" in prompt and "pe_hist.median" in prompt and "P/E" in prompt  # anchor menu, cross-check
+    assert "exactly the cash and short-term investments the fact sheet's EV subtracts" in prompt  # one EV basis
     assert "valuation alone, with no catalyst view, is a Hold" in prompt
 
 
