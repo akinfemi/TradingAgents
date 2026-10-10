@@ -1222,7 +1222,8 @@ def check_process_language(text: str, stage: str, field_name: str) -> list[LintF
 # Load-bearing only in the editorial fields the editor can patch; in the
 # excerpts (which carry news and quotes) and the risk lenses, a lead.
 EDITORIAL_FIELDS = {"digest.headline", "digest.bull_thesis", "digest.bear_thesis", "digest.ruling",
-                    "digest.bull_points", "digest.bear_points",
+                    "digest.bull_points", "digest.bear_points", "digest.call_thesis", "digest.deciding_variable",
+                    "digest.catalyst",
                     "digest.conviction_note", "digest.sizing", "digest.entry_style", "digest.review_cycle",
                     "digest.exit_triggers"}
 _QUOTED = re.compile(r"\"[^\"\n]{0,400}\"|“[^”\n]{0,400}”")
@@ -1345,6 +1346,56 @@ def check_margin_wording(digest: dict) -> list[LintFlag]:
 _FUNDAMENTAL = re.compile(r"revenue|sales|growth|margin|cash flow|\bFCF\b|guidance|\bEPS\b|earnings per|backlog|"
                           r"bookings|orders|net income|operating income|operating loss|net loss|debt|dilution|"
                           r"share count|burn|runway", re.I)
+
+
+_NUM = re.compile(r"[-−]?\$?\d[\d,]*(?:\.\d+)?")
+
+
+def _first_number(text) -> float | None:
+    m = _NUM.search(str(text or ""))
+    return float(m.group(0).replace("−", "-").replace("$", "").replace(",", "")) if m else None
+
+
+def check_trigger_headroom(digest: dict) -> list[LintFlag]:
+    """Check 8: a trigger's threshold isn't today's value (GOOGL review: "trim if
+    operating margin falls below 34.0%", the quarter's margin to the decimal).
+    A lead for the editor."""
+    flags = []
+    for t in digest.get("exit_triggers") or []:
+        if not isinstance(t, dict):
+            continue
+        now, at = _first_number(t.get("current")), _first_number(t.get("threshold"))
+        if now is not None and at is not None and abs(now - at) <= max(abs(now) * 0.01, 1e-9):
+            flags.append(LintFlag("minor", "trigger_headroom", "digest", "digest.exit_triggers",
+                                  f"{t.get('metric') or t.get('title')}: current {t.get('current')}, threshold "
+                                  f"{t.get('threshold')}"[:300],
+                                  "a threshold at today's value fires on any move; give it headroom or call it a tripwire"))
+    return flags
+
+
+def check_target_debt(decision: dict | None, facts: Facts) -> list[LintFlag]:
+    """Check 6 (part): the target math subtracts the debt EV uses (long-term plus
+    current). GOOGL review: EV used $100.17B, the target $98.17B."""
+    if not decision or not facts:
+        return []
+    math_text = decision.get("target_math") or ""
+    sheet = facts.sheet or {}
+    quarters = sheet.get("quarters") or []
+    if not math_text or not quarters:
+        return []
+    q = quarters[-1]["calendar"]
+    lt, cur = facts.value(f"debt.{q}"), facts.value(f"debt_current.{q}")
+    if not isinstance(lt, (int, float)) or not isinstance(cur, (int, float)) or cur < 0.01 * (lt + cur):
+        return []
+    total = lt + cur
+    near_debt = [f.value for f in figures(math_text)
+                 if f.kind == "usd" and re.search(r"debt", math_text[f.end:f.end + 40], re.I)]
+    if near_debt and not any(abs(x - total) <= 0.01 * total for x in near_debt) \
+            and any(abs(x - lt) <= 0.005 * lt for x in near_debt):
+        return [LintFlag("minor", "target_debt", "portfolio_manager", "pm.price_target", math_text[:300],
+                         f"the target subtracts long-term debt only ({lt / 1e9:,.2f}B); EV uses long-term plus "
+                         f"current debt ({total / 1e9:,.2f}B)", [f"debt.{q}", f"debt_current.{q}"])]
+    return []
 
 
 def check_trigger_mix(digest: dict) -> list[LintFlag]:
@@ -1522,6 +1573,8 @@ def lint_state(state: dict) -> dict:
             flags.extend(check_rating_words("\n".join(_digest_strings(item)), rating, "digest", f"digest.{key}"))
     flags.extend(check_margin_wording(digest))
     flags.extend(check_trigger_mix(digest))
+    flags.extend(check_trigger_headroom(digest))
+    flags.extend(check_target_debt(state.get("portfolio_decision"), facts))
     # Two figures in one sentence are one finding, not two.
     unique: dict[tuple, LintFlag] = {}
     for f in flags:

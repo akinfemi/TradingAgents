@@ -721,3 +721,33 @@ def test_check_8_second_review_cases(sheet):
     assert "rating_word" in flagged({"ruling": "SELL into strength as guidance was cut."})
     assert "rating_word" in flagged({"ruling": "The stock moved; SELL now."})
     assert "rating_word" not in flagged({"ruling": "One broker cut the stock to Overweight from Buy."})
+
+
+@pytest.mark.unit
+def test_trigger_headroom_and_target_debt():
+    from tradingagents.quality.lint import check_target_debt, check_trigger_headroom
+
+    digest = {"exit_triggers": [
+        {"title": "Margin slips", "detail": "d", "metric": "Operating margin", "current": "34.0%", "threshold": "below 34.0%"},
+        {"title": "Cloud slows", "detail": "d", "metric": "Cloud growth", "current": "32%", "threshold": "below 25%"},
+    ]}
+    flags = check_trigger_headroom(digest)
+    assert [f.kind for f in flags] == ["trigger_headroom"] and "Operating margin" in flags[0].quote
+    sheet = Facts({"quarters": [{"calendar": "2026Q2", "end": "2026-06-30"}], "facts": [
+        {"key": "debt.2026Q2", "value": 98.17e9, "unit": "usd"},
+        {"key": "debt_current.2026Q2", "value": 2.0e9, "unit": "usd"}]})
+    lt_only = {"target_math": "10x × $400B = $4,000B EV; + $155B cash − $98.17B long-term debt = $4,056.83B; "
+                              "÷ 12.1B shares = $335.27"}
+    assert [f.kind for f in check_target_debt(lt_only, sheet)] == ["target_debt"]
+    total = {"target_math": lt_only["target_math"].replace("$98.17B long-term debt", "$100.17B debt")}
+    assert check_target_debt(total, sheet) == []
+
+
+@pytest.mark.unit
+def test_the_digest_gets_the_fact_sheet_flags():
+    from tradingagents.graph.digest import build_digest_prompt
+
+    prompt = build_digest_prompt({"company_of_interest": "GOOGL", "trade_date": "2026-10-09",
+                                  "fact_sheet": {"flags": ["Cash + short-term investments moved $115.63B"],
+                                                 "unavailable": ["10-year Treasury yield unavailable"]}})
+    assert "Fact-sheet flags and data gaps" in prompt and "$115.63B" in prompt and "Unavailable: 10-year" in prompt

@@ -150,6 +150,10 @@ def build_digest_prompt(final_state: dict, computed_context: str | None = None) 
         "is the final rating. Time is stated in market terms ('over the next "
         "five sessions', 'before the November 4 report'), never relative to "
         "today ('after the weekend', 'tomorrow', 'Monday').",
+        "- Each bull or bear point built on a year-on-year comparison says so when the base quarter is "
+        "flagged as a likely one-off below (e.g. 'op margin 17% vs −2%, but the year-ago quarter carried an "
+        "~$800M charge'). The bear points include the strongest version of the risk, not only 'valuation is high'.",
+        "- If the news report found no company-specific news, add that to `flags` as a data gap.",
         "- When the source cites the same multiple on two bases (EV/sales on "
         "TTM revenue and on annualized latest-quarter revenue), label each "
         "with its basis every time it appears.",
@@ -165,6 +169,12 @@ def build_digest_prompt(final_state: dict, computed_context: str | None = None) 
             "correct: quote these and do not repeat the contradicted number.\n\n"
             f"{computed_context}\n"
         )
+    sheet = final_state.get("fact_sheet") or {}
+    notes = [*(sheet.get("flags") or []), *(f"Unavailable: {u}" for u in sheet.get("unavailable") or [])]
+    if notes:
+        # R8: the source of the digest's reader-facing flags (one-pager spec).
+        parts.append("## Fact-sheet flags and data gaps (computed in code; rewrite the ones a reader needs as "
+                     "the `flags` field, in reader words)\n\n" + "\n".join(f"- {n}" for n in notes) + "\n")
     for label, text in _sources_from_state(final_state):
         if text:
             parts.append(f"## {label}\n\n{text}\n")

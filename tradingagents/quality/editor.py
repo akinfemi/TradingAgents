@@ -166,7 +166,7 @@ BRIEF = """You are the supervisory analyst reviewing an AI-written equity resear
 
 You have the run's fact sheet (figures computed in code from the company's SEC filings and its prices), the report's digest (what readers see first), the automated lint report, and the full transcript of every stage. Use the tools: `fact` to read any fact-sheet key, `calc` for any arithmetic. You may not state a number in a finding, correction, patch or note unless you got it from `fact` or `calc`, or quote it from the text under review.
 
-Check every load-bearing figure and attribution: the digest headline, bull and bear theses and points, the ruling, exit triggers, the PM's summary and thesis, and the price target and its math. Also answer:
+Check every load-bearing figure and attribution: the digest headline, the call, deciding variable and catalyst, bull and bear theses and points, the ruling, exit triggers, the PM's summary and thesis, and the price target and its math. Also answer:
 - Is the price target derived (shown math from cited figures), or asserted? A valuation multiple is the analyst's judgment: it is supported when its level is stated against a cited figure (today's multiple) and the reason for the change is given from the fact sheet (growth, margins, losses, dilution). Don't demand that a multiple be computed. Flag "price target not derived" only when there is no arithmetic from cited figures to the target, the arithmetic doesn't reach the stated target, or the target contradicts the rating's direction; an unexplained bear or bull multiple is minor.
 - Does the 3-month rating horizon fit the thesis and its catalysts?
 - Is the stop placed sensibly against the ATR?
@@ -551,7 +551,8 @@ def review(llm, state: dict, lint_report: dict, earlier_errata: str = "", callba
 _PATH = re.compile(r"^(?P<field>\w+)(?:\[(?P<index>\d+)\](?:\.(?P<sub>\w+))?)?$")
 _PATCHABLE = {"headline", "bull_thesis", "bull_points", "bear_thesis", "bear_points", "ruling",
               "market_excerpt", "sentiment_excerpt", "news_excerpt", "fundamentals_excerpt",
-              "trader_excerpt", "conviction_note", "exit_triggers", "sizing", "entry_style", "review_cycle"}
+              "trader_excerpt", "conviction_note", "exit_triggers", "sizing", "entry_style", "review_cycle",
+              "call_thesis", "deciding_variable", "catalyst"}
 
 
 def _patch_text(value) -> str | None:

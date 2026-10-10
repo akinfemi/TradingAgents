@@ -341,6 +341,22 @@ class PortfolioDecision(BaseModel):
     bull_case_value: float | None = Field(
         default=None, description="Per-share value in the bull case, same method.",
     )
+    # R8 (one-pager spec, 2026-10-10): the cases as a reader scans them.
+    valuation_rationale: str | None = Field(
+        default=None,
+        description="One sentence on why this method suits this company now, e.g. 'EV/EBIT, because a $98B "
+                    "non-operating gain distorts net income'.",
+    )
+    target_multiple: float | None = Field(default=None, description="The multiple the target applies, e.g. 18.0.")
+    bear_multiple: float | None = Field(default=None, description="The bear case's multiple.")
+    bull_multiple: float | None = Field(default=None, description="The bull case's multiple.")
+    base_case: str | None = Field(
+        default=None,
+        description="What has to be true for the target, in one sentence with its number, e.g. 'Cloud growth holds "
+                    "above 30% and the multiple settles at its 5-year 75th percentile'.",
+    )
+    bear_case: str | None = Field(default=None, description="What has to be true for the bear value, one sentence.")
+    bull_case: str | None = Field(default=None, description="What has to be true for the bull value, one sentence.")
     execution_timing: str | None = Field(
         default=None,
         description=(
@@ -355,7 +371,8 @@ class PortfolioDecision(BaseModel):
         ),
     )
 
-    @field_validator("price_target", "bear_case_value", "bull_case_value", mode="before")
+    @field_validator("price_target", "bear_case_value", "bull_case_value", "target_multiple", "bear_multiple",
+                     "bull_multiple", mode="before")
     @classmethod
     def _nullish_float_to_none(cls, v):
         return _coerce_optional_float(v)
@@ -373,7 +390,8 @@ class PortfolioDecision(BaseModel):
         return _coerce_enum(v, PortfolioRating)
 
     @field_validator("executive_summary", "investment_thesis", "valuation_method", "target_math",
-                     "execution_timing", "time_horizon", mode="before")
+                     "execution_timing", "time_horizon", "valuation_rationale", "base_case", "bear_case",
+                     "bull_case", mode="before")
     @classmethod
     def _text(cls, v):
         return _coerce_text(v)
@@ -525,6 +543,19 @@ class DigestPoint(BaseModel):
     )
 
 
+class ExitTrigger(DigestPoint):
+    """A trigger as a row: what is watched, where it is, where it fires, and
+    when it is next checked (one-pager spec, 2026-10-10)."""
+
+    metric: str | None = Field(default=None, description="What is watched, e.g. 'Data Center revenue growth, YoY'.")
+    current: str | None = Field(default=None, description="Its value now, from the fact sheet, e.g. '107%'.")
+    threshold: str | None = Field(
+        default=None,
+        description="Where it fires, with deliberate headroom from today's value (not at it), e.g. 'below 60%'.",
+    )
+    check: str | None = Field(default=None, description="When it is next checked, e.g. 'Q3 report, Nov 4'.")
+
+
 class RiskLens(BaseModel):
     """One risk analyst's position, condensed to a stance plus rationale."""
 
@@ -667,7 +698,30 @@ class ReportDigest(BaseModel):
             "e.g. 'Quarterly, or on trigger'. None if unspecified."
         ),
     )
-    exit_triggers: list[DigestPoint] = Field(
+    call_thesis: str | None = Field(
+        default=None,
+        description="The call in one plain-language sentence a non-specialist follows: what the stock does over "
+                    "the horizon and why. No sizing, no levels.",
+    )
+    deciding_variable: str | None = Field(
+        default=None,
+        description="The single variable that decides the call, stated as something you could test, with its "
+                    "number and when it is known, e.g. 'Cloud growth must stay above 30% at the Q3 print (Oct 28) "
+                    "to justify 10x sales'.",
+    )
+    catalyst: str | None = Field(
+        default=None,
+        description="Why now: the dated catalyst inside the horizon and what it must show, e.g. 'Q3 report, Nov 4: "
+                    "Data Center growth against 107% last quarter'. None if the decision names none.",
+    )
+    flags: list[str] = Field(
+        default_factory=list,
+        description="Anomalies and data gaps a reader should know before trusting the numbers, from the fact-sheet "
+                    "flags and missing sources given below: one sentence each, with its figure, in reader words "
+                    "(e.g. 'Cash and investments rose $116B in Q2 against −$5.9B of free cash flow: most of it is an "
+                    "equity stake marked to market, not cash.'). At most five. Empty when there are none.",
+    )
+    exit_triggers: list[ExitTrigger] = Field(
         description=(
             "The 3-4 conditions under which the decision says to exit, trim, "
             "or reverse — the watchlist this report leaves behind. Each title "
@@ -675,6 +729,16 @@ class ReportDigest(BaseModel):
             "it, in one sentence of at most 240 characters. At least one is a "
             "fundamental threshold with its current value (segment growth, "
             "gross or operating margin, free cash flow, guidance), not a "
-            "price level or indicator."
+            "price level or indicator; at most one is price-based. Fill metric, "
+            "current, threshold and check for each; thresholds keep headroom "
+            "from today's value."
         ),
     )
+
+    @field_validator("exit_triggers", mode="before")
+    @classmethod
+    def _points_as_triggers(cls, v):
+        # A plain DigestPoint (older callers, the editor's patches) is a trigger
+        # without its row fields.
+        return [p.model_dump() if isinstance(p, DigestPoint) and not isinstance(p, ExitTrigger) else p
+                for p in (v or [])]
