@@ -157,7 +157,7 @@ def _tools() -> list[dict]:
     ]
 
 
-def judge(client, model: str, run: dict) -> tuple[Judgement, dict]:
+def judge(client, model: str, run: dict, trail: list | None = None) -> tuple[Judgement, dict]:
     """One grounded judgement through OpenRouter. Usage and OpenRouter's own
     billed cost sum over every round. A judgement that breaks the schema, or
     one submitted beside unanswered tool calls, is sent back to be redone."""
@@ -196,6 +196,11 @@ def judge(client, model: str, run: dict) -> tuple[Judgement, dict]:
         msg = choice.message
         messages.append(msg.model_dump(exclude_none=True))
         calls = msg.tool_calls or []
+        # The working record (2026-10-10): what the judge looked up and
+        # recalculated, round by round, saved with its judgement.
+        step = {"round": usage["rounds"], "text": (msg.content or "")[:300], "calls": []}
+        if trail is not None:
+            trail.append(step)
         if not calls:
             messages.append({"role": "user", "content": "Finish by calling submit_judgement."})
             continue
@@ -208,6 +213,7 @@ def judge(client, model: str, run: dict) -> tuple[Judgement, dict]:
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": f"error: invalid JSON ({exc})"})
                 continue
             if name == "submit_judgement":
+                step["calls"].append({"tool": "submit_judgement", "accepted": not others})
                 if others:
                     messages.append({"role": "tool", "tool_call_id": call.id, "content":
                                      "error: not submitted. Read the tool results first, then call "
@@ -224,6 +230,8 @@ def judge(client, model: str, run: dict) -> tuple[Judgement, dict]:
                     continue
             usage["tool_calls"] += 1
             out = calc(args.get("expression", "")) if name == "calc" else fact(facts, args.get("key", ""))
+            step["calls"].append({"tool": name, "args": str(args.get("expression") if name == "calc"
+                                                             else args.get("key", ""))[:160], "result": str(out)[:200]})
             messages.append({"role": "tool", "tool_call_id": call.id, "content": out})
     raise RuntimeError("the judge did not submit a judgement")
 
@@ -267,13 +275,18 @@ def main() -> int:
         made_from = _fingerprint(run_file, args.judge_model)
         saved = json.loads(out.read_text(encoding="utf-8")) if out.is_file() else None
         if not saved or saved.get("made_from") != made_from:
+            trail: list = []
             try:
-                judgement, usage = judge(client, args.judge_model, run)
+                judgement, usage = judge(client, args.judge_model, run, trail)
             except Exception as exc:  # noqa: BLE001 — record and continue
                 failed.append(ticker)
                 print(f"  {ticker}: judge failed ({type(exc).__name__}: {str(exc)[:300]})", flush=True)
                 continue
-            saved = {"judgement": judgement.model_dump(), "usage": usage, "made_from": made_from}
+            saved = {"judgement": judgement.model_dump(), "usage": usage, "made_from": made_from,
+                     "trail": trail,
+                     "checks": {"facts": sum(1 for r in trail for c in r["calls"] if c["tool"] == "fact"),
+                                "calcs": sum(1 for r in trail for c in r["calls"] if c["tool"] == "calc"),
+                                "rounds": len(trail)}}
             out.write_text(json.dumps(saved, indent=1), encoding="utf-8")
         j, usage = saved["judgement"], saved["usage"]
         lb = [f for f in j["findings"] if f["load_bearing"]]
@@ -282,6 +295,7 @@ def main() -> int:
             "ticker": ticker, "rating": run["rating"], "scores": j["scores"],
             "mean_score": round(sum(j["scores"].values()) / len(CLASSES), 2),
             "load_bearing_errors": len(lb), "load_bearing_checked": sum(1 for f in lb if f.get("checked")),
+            "checks": saved.get("checks"),
             "minor_errors": len(j["findings"]) - len(lb), "verdict": j["verdict"],
             "quality_status": run.get("quality_status") or quality.get("status"),
             "revisions": run.get("revisions"),

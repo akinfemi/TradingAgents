@@ -224,7 +224,18 @@ def _submit_args(reply) -> dict | None:
     return None
 
 
-def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None) -> dict:
+def _reply_text(reply) -> str:
+    content = getattr(reply, "content", "")
+    if isinstance(content, list):
+        content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+    return str(content or "").strip()[:300]
+
+
+def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None, trail: list | None = None) -> dict:
+    """One review attempt. ``trail`` (when given) receives the working record
+    for admin: per round, whether it was forced, any text, and each tool call
+    with its arguments and a short result (2026-10-10: a staging review that
+    checked only the target math could not be reconstructed)."""
     from langchain_core.messages import HumanMessage, ToolMessage
 
     bound = llm.bind_tools(TOOLS)
@@ -263,9 +274,13 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None) -> d
     must_submit = False
     for round_no in range(1, MAX_TOOL_ROUNDS + 1):
         left = MAX_TOOL_ROUNDS - round_no
-        reply = invoke_forced(messages) if must_submit or left == 0 else bound.invoke(messages, config=config)
+        is_forced = must_submit or left == 0
+        reply = invoke_forced(messages) if is_forced else bound.invoke(messages, config=config)
         messages.append(reply)
         calls = getattr(reply, "tool_calls", None) or []
+        step = {"round": round_no, "forced": is_forced, "text": _reply_text(reply), "calls": []}
+        if trail is not None:
+            trail.append(step)
         if not calls:
             # A round without a tool call still counts; the next one must submit.
             logger.warning("editor: round %d made no tool call; asking for submit_review", round_no)
@@ -276,8 +291,12 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None) -> d
         for call in calls:
             name, args = call["name"], call.get("args") or {}
             if name == "submit_review":
+                step["calls"].append({"tool": "submit_review"})
                 return args
             result = calc(args.get("expression", "")) if name == "calc" else fact(facts, args.get("key", ""))
+            step["calls"].append({"tool": name, "args": str(args.get("expression") if name == "calc"
+                                                             else args.get("key", ""))[:160],
+                                  "result": str(result)[:200]})
             if on_step:
                 # The run page shows the review working, not a frozen step.
                 on_step({"kind": "calc" if name == "calc" else "fact",
@@ -295,7 +314,11 @@ def _run_once(llm, prompt: str, facts: Facts, callbacks=None, on_step=None) -> d
     messages.append(HumanMessage(content=(
         "No tool rounds are left. Call submit_review now with the review as it stands: "
         "report what you checked; leave unchecked items out.")))
-    args = _submit_args(invoke_forced(messages))
+    final = invoke_forced(messages)
+    args = _submit_args(final)
+    if trail is not None:
+        trail.append({"round": MAX_TOOL_ROUNDS + 1, "forced": True, "text": _reply_text(final),
+                      "calls": [{"tool": "submit_review"}] if args is not None else []})
     if args is not None:
         return args
     raise RuntimeError("the editor did not submit a review")
@@ -336,9 +359,11 @@ def review(llm, state: dict, lint_report: dict, earlier_errata: str = "", callba
     facts = Facts(state.get("fact_sheet"))
     prompt = build_prompt(state, lint_report, earlier_errata)
     started, delay, last = time.monotonic(), 5.0, None
+    failed_attempts: list[str] = []
     while True:
+        trail: list = []
         try:
-            out = _run_once(llm, prompt, facts, callbacks, on_step)
+            out = _run_once(llm, prompt, facts, callbacks, on_step, trail)
             for key in ("findings", "digest_patch", "decision_flags"):
                 out[key] = _as_list(out.get(key))
             # A review that breaks the schema is a failed attempt, retried
@@ -349,11 +374,18 @@ def review(llm, state: dict, lint_report: dict, earlier_errata: str = "", callba
             out["editor_note"] = (out.get("editor_note") or "").strip()
             out["hold_reason"] = (out.get("hold_reason") or "").strip()
             out["lint_dismissed"] = _resolve_dismissals(out.get("lint_dismissed"), prompt_flags(lint_report))
+            # The working record, for admin: what this review looked up and
+            # recalculated, round by round, and why earlier attempts failed.
+            out["trail"] = trail
+            out["checks"] = {"facts": sum(1 for r in trail for c in r["calls"] if c["tool"] == "fact"),
+                             "calcs": sum(1 for r in trail for c in r["calls"] if c["tool"] == "calc"),
+                             "rounds": len(trail), "failed_attempts": failed_attempts}
             return out
         except Exception as exc:  # noqa: BLE001 — retried, then a hold
             if is_fatal(exc):
                 raise
             last = exc
+            failed_attempts.append(f"{type(exc).__name__}: {str(exc)[:200]}")
             logger.warning("editor attempt failed: %s", exc)
             if time.monotonic() - started + delay > budget_seconds:
                 raise EditorUnavailable(f"editor unavailable: {type(last).__name__}: {last}") from last

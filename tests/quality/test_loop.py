@@ -759,3 +759,30 @@ def test_digest_field_names_map_to_the_digest():
     for stage in ("ruling", "market_excerpt", "trader_excerpt", "sizing", "conviction_note", "bear_points[2]"):
         assert errata.normalize_stage(stage) == "digest", stage
     assert errata.normalize_stage("risk_judge") == "portfolio_manager"
+
+
+@pytest.mark.unit
+def test_the_review_keeps_its_working_record():
+    """2026-10-10: a staging review checked only the target math and we could
+    not tell; every review keeps what it looked up and recalculated."""
+    from langchain_core.messages import AIMessage
+
+    replies = [AIMessage(content="", tool_calls=[{"name": "fact", "args": {"key": "revenue.2026Q2"}, "id": "1"},
+                                                 {"name": "calc", "args": {"expression": "2+2"}, "id": "2"}]),
+               AIMessage(content="", tool_calls=[{"name": "submit_review", "args": {"findings": []}, "id": "3"}])]
+
+    class Bound:
+        def invoke(self, messages, config=None):
+            return replies.pop(0)
+
+    class Fake:
+        model_name = "x"
+
+        def bind_tools(self, _tools, **_kw):
+            return Bound()
+
+    out = editor.review(Fake(), {"fact_sheet": SHEET}, {"flags": []}, sleep=lambda _s: None)
+    assert out["checks"] == {"facts": 1, "calcs": 1, "rounds": 2, "failed_attempts": []}
+    first = out["trail"][0]["calls"]
+    assert first[0] == {"tool": "fact", "args": "revenue.2026Q2", "result": first[0]["result"]} and "83800000" in first[0]["result"]
+    assert first[1]["result"] == "4" and out["trail"][1]["calls"] == [{"tool": "submit_review"}]
