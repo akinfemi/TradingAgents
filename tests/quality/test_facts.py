@@ -750,3 +750,24 @@ def test_declared_split_ratios_count_and_spin_offs_do_not():
     assert facts._split_factor("2024-01-01", [("2024-06-01", 1.5)]) == 1.5        # 3-for-2
     assert facts._split_factor("2024-01-01", [("2024-06-01", 1.25)]) == 1.25      # 5-for-4
     assert facts._split_factor("2024-01-01", [("2024-04-02", 1.253)]) == 1.0      # GE / GE Vernova spin-off
+
+
+
+@pytest.mark.unit
+def test_deep_reverse_splits_count():
+    for n in (25, 50, 100):
+        assert facts._split_factor("2024-01-01", [("2024-06-01", 1 / n)]) == pytest.approx(1 / n)
+
+
+@pytest.mark.unit
+def test_commercial_paper_inside_short_term_borrowings_is_not_subtracted_twice():
+    def stock(val):
+        return {"units": {"USD": [{"end": e, "val": val, "filed": "2026-05-01", "form": "10-Q", "accn": f"q{i}"}
+                                  for i, (_s, e) in enumerate(QUARTERS)]}}
+
+    cf = _companyfacts(100e9, 50e9)
+    cf["facts"]["us-gaap"].update({"LongTermDebt": stock(100e9), "DebtCurrent": stock(30e9),
+                                   "CommercialPaper": stock(20e9), "ShortTermBorrowings": stock(20e9)})
+    st = edgar_ext.from_json("0000000002", cf, {"name": "Test Co"}, "2026-10-08")
+    end = st.quarter_ends[-1]
+    assert st.quarters["debt"][end].value == 90e9

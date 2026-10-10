@@ -351,7 +351,8 @@ def from_json(cik: str, facts: dict, submissions: dict, as_of: str,
         known, unit = _known(us_gaap, tag, as_of)
         for end in set(quarter_ends) | set(year_ends):
             if known and (v := _stock_at(known, unit, tag, end)) is not None:
-                short_term[end] = short_term.get(end, 0.0) + v.value
+                # Short-term borrowings usually include the paper: the larger, not the sum.
+                short_term[end] = max(short_term.get(end, 0.0), v.value)
     for table in (out.quarters, out.years):
         for end, val in (table.get("debt") or {}).items():
             current = ltd_current.get(end)

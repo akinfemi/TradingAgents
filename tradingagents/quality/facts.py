@@ -326,8 +326,9 @@ def _split_factor(filed: str | None, splits: list[tuple[str, float]] | None) -> 
         # it, so only ratios a board declares (10:1, 3:2, 5:4, 1:20) count.
         # (The history keeps every ratio: Yahoo adjusts past prices for both.)
         if filed < day and ratio > 0:
-            clean = Fraction(ratio).limit_denominator(20)
-            if clean.numerator <= 100 and abs(float(clean) - ratio) <= 0.001 * ratio:
+            big = max(ratio, 1 / ratio)              # 1:50 reverse splits as well as 3:2 forward
+            clean = Fraction(big).limit_denominator(20)
+            if clean.numerator <= 200 and abs(float(clean) - big) <= 0.001 * big:
                 factor *= ratio
     return factor
 
