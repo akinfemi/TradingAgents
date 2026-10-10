@@ -699,3 +699,25 @@ def test_rating_words_and_margin_words_ignore_other_meanings(sheet):
     assert kinds_for(margin) == [("margin_wording", "digest.ruling")]
     margin.update(conviction=30, ruling="The bear side narrowly carried the debate.")
     assert kinds_for(margin) == []
+
+
+@pytest.mark.unit
+def test_check_8_second_review_cases(sheet):
+    def voice(text, field="digest.ruling"):
+        return [f for f in lint_text(text, sheet, "digest", field) if f.kind == "voice"]
+    for text in ("Overall I think the bear wins.", "Here I see limited upside.", "Stage trims on Monday.",
+                 "I'd add.", "The bull point: I would add."):
+        assert voice(text, "digest.bull_points" if "point" in text else "digest.ruling"), text
+    assert all(f.severity == "load_bearing" for f in voice("I would add.", "digest.bull_points"))
+
+    def flagged(digest, rating="Underweight"):
+        state = {"fact_sheet": None, "portfolio_decision": {"rating": rating}, "report_digest": digest}
+        return {f["kind"] for f in lint_state(state)["flags"]}
+    for headline in ("AMD beat Q3 estimates slightly, but guidance disappoints.", "Earnings beat marginally.",
+                     "The bull side cites slightly firmer margins.", "Margins favor a slightly lower multiple.",
+                     "The bear won; margins slightly lower.", "The bear wins: guidance barely covers capex."):
+        assert "margin_wording" not in flagged({"conviction": 62, "headline": headline}), headline
+    assert "margin_wording" in flagged({"conviction": 62, "ruling": "The bear case carried the debate narrowly."})
+    assert "rating_word" in flagged({"ruling": "SELL into strength as guidance was cut."})
+    assert "rating_word" in flagged({"ruling": "The stock moved; SELL now."})
+    assert "rating_word" not in flagged({"ruling": "One broker cut the stock to Overweight from Buy."})

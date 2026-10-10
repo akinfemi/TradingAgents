@@ -1222,6 +1222,7 @@ def check_process_language(text: str, stage: str, field_name: str) -> list[LintF
 # Load-bearing only in the editorial fields the editor can patch; in the
 # excerpts (which carry news and quotes) and the risk lenses, a lead.
 EDITORIAL_FIELDS = {"digest.headline", "digest.bull_thesis", "digest.bear_thesis", "digest.ruling",
+                    "digest.bull_points", "digest.bear_points",
                     "digest.conviction_note", "digest.sizing", "digest.entry_style", "digest.review_cycle",
                     "digest.exit_triggers"}
 _QUOTED = re.compile(r"\"[^\"\n]{0,400}\"|“[^”\n]{0,400}”")
@@ -1234,8 +1235,14 @@ _SECOND_PERSON = re.compile(r"(?<![\w'’])(?:you(?=\s+(?:should|could|would|can
                             r"exposure|target|risk|holdings?|loss|account)\b))|"
                             r"\bthe investor(?:'s|’s)?\b(?!\s+(?:day|relations|presentation|conference|call|deck)\b)"
                             r"(?!,\s+[A-Z])", re.I)
+_WEEKDAY = r"(?:Monday|Tuesday|Wednesday|Thursday|Friday)"
+# "on Monday" is relative; "on Tuesday, November 4" and "on Monday 6 October" are dates.
 _RELATIVE_TIME = re.compile(r"\b(?:after|over|through|this|next)\s+(?:the\s+)?weekend\b|\btomorrow\b|\btonight\b|"
-                            r"\b(?:this|next)\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday)\b", re.I)
+                            rf"\b(?:this|next)\s+{_WEEKDAY}\b|\bon\s+{_WEEKDAY}\b(?!,?\s+(?:[A-Z][a-z]{{2}}|\d))", re.I)
+# A first-person verb after "I" makes it the pronoun even after a capitalised
+# word ("Overall I think", "Here I see").
+_I_VERB = re.compile(r"\s+(?:think|believe|would|will|see|expect|prefer|recommend|am|have|remain|maintain|"
+                     r"reconsider|favor|favour|view|rate|suggest|doubt|agree)\b")
 _LENS_META = re.compile(r"\bthis lens\b|\blens (?:adds|makes|requires|favors|favours)\b", re.I)
 
 
@@ -1257,7 +1264,8 @@ def check_voice(text: str, stage: str, field_name: str) -> list[LintFlag]:
         for m in rx.finditer(bare):
             sentence = _sentence_at(text, m.start(), m.end())
             # "Phase I trial", "Fund I raised", "Charles I": a numeral after a name.
-            if sentence in seen or (m.group(0) == "I" and re.search(r"[A-Z][\w-]*\s*$", bare[:m.start()])):
+            if sentence in seen or (m.group(0) == "I" and re.search(r"[A-Z][\w-]*\s*$", bare[:m.start()])
+                                    and not _I_VERB.match(bare, m.end())):
                 continue
             seen.add(sentence)
             flags.append(LintFlag(severity, "voice", stage, field_name, sentence[:300],
@@ -1270,8 +1278,10 @@ _TRADER_ACTION = re.compile(r"(?<![\w$-])(?:BUY|SELL|HOLD)\b(?!-(?:side|rated)\b
 _TIER_WORD = re.compile(r"\b(?:Overweight|Underweight|OVERWEIGHT|UNDERWEIGHT)\b(?!-rated\b)")
 # A sentence reporting someone else's rating action ("Morgan Stanley cut it to
 # Underweight") is news, not the report's rating.
-_RATING_NEWS = re.compile(r"\b(?:upgrad\w*|downgrad\w*|cut|raised|moved|initiat\w*|reiterat\w*|analysts?|"
-                          r"brokers?|consensus)\b", re.I)
+_RATING_NEWS = re.compile(r"\b(?:upgrad\w*|downgrad\w*)\b|\banalysts?\s+at\b|\bconsensus\s+rating\b|"
+                          r"\b(?:cut|raised|moved|lowered|initiat\w*|reiterat\w*)\b[^.;]{0,40}?\b(?:to|at|with)\s+(?:an?\s+)?"
+                          r"(?:Buy|Overweight|Hold|Underweight|Sell|Neutral|Outperform|Underperform|Equal[- ]weight)\b",
+                          re.I)
 
 
 def check_rating_words(text: str, rating: str | None, stage: str, field_name: str) -> list[LintFlag]:
@@ -1300,12 +1310,15 @@ def check_rating_words(text: str, rating: str | None, stage: str, field_name: st
 
 
 # The margin word must describe the win, not a moat, a margin or a factor.
-_WIN = r"(?:won|wins|win|prevail\w*|carr(?:y|ies|ied)|edged?|edges|beat|beats|favou?r\w*|ruled?|ruling|side)"
-_NARROW = re.compile(rf"\b{_WIN}\W+(?:\w+\W+){{0,3}}?(?:narrow(?:ly)?|slight(?:ly)?|marginal(?:ly)?|barely|by a hair)\b|"
-                     rf"\b(?:narrow(?:ly)?|slight(?:ly)?|marginal(?:ly)?|barely)\W+(?:\w+\W+){{0,2}}?{_WIN}\b", re.I)
-_DECISIVE = re.compile(rf"\b{_WIN}\W+(?:\w+\W+){{0,3}}?(?:decisive(?:ly)?|overwhelming(?:ly)?|resounding(?:ly)?|"
-                       rf"comfortabl[ye])\b|\b(?:decisive(?:ly)?|overwhelming(?:ly)?|resounding(?:ly)?|one-sided)\W+"
-                       rf"(?:\w+\W+){{0,2}}?(?:{_WIN}|victory|debate)\b", re.I)
+# Debate verbs only ("beat estimates slightly" is an earnings beat), within
+# one clause.
+_WIN = r"(?:won|wins|prevail\w*|carried|carries|edged|edges)"
+_GAP = r"[^\w.;:]+"
+_NARROW = re.compile(rf"\b{_WIN}{_GAP}(?:\w+{_GAP}){{0,3}}?(?:narrow(?:ly)?|slight(?:ly)?|marginal(?:ly)?|barely|by a hair)\b|"
+                     rf"\b(?:narrow(?:ly)?|slight(?:ly)?|marginal(?:ly)?|barely){_GAP}(?:\w+{_GAP}){{0,2}}?{_WIN}\b", re.I)
+_DECISIVE = re.compile(rf"\b{_WIN}{_GAP}(?:\w+{_GAP}){{0,3}}?(?:decisive(?:ly)?|overwhelming(?:ly)?|resounding(?:ly)?|"
+                       rf"comfortabl[ye])\b|\b(?:decisive(?:ly)?|overwhelming(?:ly)?|resounding(?:ly)?|one-sided){_GAP}"
+                       rf"(?:\w+{_GAP}){{0,2}}?(?:{_WIN}|victory|debate)\b", re.I)
 
 
 def check_margin_wording(digest: dict) -> list[LintFlag]:
