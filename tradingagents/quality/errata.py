@@ -123,6 +123,8 @@ def from_editor(findings: list[dict]) -> list[dict]:
             "source": normalize_stage(loc.get("stage")) if loc.get("stage") else "", "field": loc.get("field", ""),
             "quote": loc.get("quote", ""), "problem": f.get("problem", ""), "correct": f.get("correction"),
             "origin": "editor",
+            # The reader's line and gloss, for the report page's corrections.
+            **{k: f[k] for k in ("tag", "short", "plain") if isinstance(f.get(k), str) and f[k].strip()},
         })
     return out
 

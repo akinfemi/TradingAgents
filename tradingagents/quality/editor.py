@@ -414,8 +414,8 @@ _TAG_WORDS = [
     ("arithmetic", r"arithmetic|\bmath\b|calculat|adds? up|doesn.t reach|\bgives \$|\bsums?\b|computes?"),
     ("price_target", r"price target|\btarget\b|\bstop\b|\bexit\b|entry zone|\bentry\b|upside|downside"),
     ("valuation", r"multiple|valuation|\bev\b|ev/|p/e|enterprise value|\bdcf\b"),
-    ("call", r"\brating\b|thesis|evidence|direction of the call|\bcall\b|\bbull\b|\bbear\b"),
-    ("dates", r"\bdates?\b|calendar|already reported|upcoming|catalyst|earnings on|\bpast\b"),
+    ("call", r"\brating\b|thesis|evidence|direction of the call|\bcall\b"),
+    ("dates", r"\bdates?\b|calendar|already reported|upcoming|catalyst|earnings on"),
     ("sources", r"source|citation|\bcites?\b|not in the filings|unsupported|short interest|consensus"),
     ("wording", r"wording|language|phrase|vocabulary|jargon"),
     ("figures", r"figure|revenue|margin|\bcash\b|\$\d|\d%|million|billion|\bnumber|misstat|share count|"
@@ -423,11 +423,24 @@ _TAG_WORDS = [
 ]
 
 
+# A figure ($, %) next to a line item is about the figures, whatever else the
+# sentence mentions ("Revenue growth of 12% is from a different quarter").
+_FIGURE = re.compile(r"\$\s?\d|\d(\.\d+)?\s?%")
+_LINE_ITEM = re.compile(r"revenue|margin|\bcash\b|income|\bloss|liabilit|\bdebt|\beps\b|share count|"
+                        r"opex|operating (costs|expenses)|backlog|burn|gross profit")
+
+
 def infer_tag(text: str) -> str:
     """A reader tag from a finding's or a flag's own words; "other" when
-    nothing matches."""
+    nothing matches. Arithmetic and the levels come first; then a figure
+    next to a line item reads as "figures"."""
     low = str(text or "").lower()
-    for tag, pattern in _TAG_WORDS:
+    for tag, pattern in _TAG_WORDS[:2]:
+        if re.search(pattern, low):
+            return tag
+    if _FIGURE.search(low) and _LINE_ITEM.search(low):
+        return "figures"
+    for tag, pattern in _TAG_WORDS[2:]:
         if re.search(pattern, low):
             return tag
     return "other"

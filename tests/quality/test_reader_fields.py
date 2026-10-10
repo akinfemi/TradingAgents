@@ -88,3 +88,25 @@ def test_a_review_carries_reader_fields_and_flag_issues():
     assert out["findings"][0]["short"] == finding["short"] and out["findings"][0]["tag"] == "arithmetic"
     assert out["findings"][1]["tag"] == "other" and "short" not in out["findings"][1]
     assert out["flag_issues"][0]["tag"] == "price_target"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text, tag", [
+    ("Revenue growth of 12% is from a different quarter", "figures"),
+    ("The bull case overstates the backlog story", "other"),
+    ("The past quarter's margin was 39%", "figures"),
+    ("The bear thesis ignores the rating", "call"),
+])
+def test_figures_win_over_loose_words(text, tag):
+    """Review 2026-10-10: "bull"/"bear"/"past" mis-tagged findings about figures."""
+    assert editor.infer_tag(text) == tag
+
+
+@pytest.mark.unit
+def test_editor_errata_carry_the_reader_fields():
+    from tradingagents.quality import errata
+
+    e = errata.from_editor([{"severity": "load_bearing", "location": {"stage": "pm", "quote": "q"}, "problem": "p",
+                             "tag": "figures", "short": "Burn rose 6.8x, not 3x.", "plain": "", "correction": "c"}])[0]
+    assert e["short"] == "Burn rose 6.8x, not 3x." and e["tag"] == "figures" and "plain" not in e
+    assert "short" not in errata.from_editor([{"location": {}, "problem": "p"}])[0]
