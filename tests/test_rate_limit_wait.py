@@ -53,3 +53,23 @@ def test_generate_retries_a_rate_limit_then_succeeds():
     with patch.object(openai_client.ChatOpenAI, "_generate", fake), patch.object(openai_client.time, "sleep") as sleep:
         result = llm._generate([HumanMessage(content="hi")])
     assert result is ok and calls["n"] == 3 and sleep.call_count == 2
+
+
+@pytest.mark.unit
+def test_an_exhausted_quota_is_not_waited_out():
+    import httpx
+    import openai
+    from langchain_core.messages import HumanMessage
+
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    quota = openai.RateLimitError("429", response=httpx.Response(429, request=request),
+                                  body={"code": "insufficient_quota", "type": "insufficient_quota"})
+
+    def fake(self, messages, stop=None, run_manager=None, **kwargs):
+        raise quota
+
+    llm = openai_client.NormalizedChatOpenAI(model="gpt-6-luna", api_key="x")
+    with patch.object(openai_client.ChatOpenAI, "_generate", fake), patch.object(openai_client.time, "sleep") as sleep:
+        with pytest.raises(openai.RateLimitError):
+            llm._generate([HumanMessage(content="hi")])
+    assert sleep.call_count == 0

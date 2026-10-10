@@ -1179,6 +1179,8 @@ def build(ticker: str, trade_date: str, run_started_at: str | None = None, asset
                                basis=f"the {form} for the period to {report} was filed {filed_on}; a quarter on "
                                      "from the earlier estimate", note=None)
                     nxt.pop("note", None)
+                    nxt.pop("link", None)
+                    nxt["already_reported"] = [*nxt.get("already_reported", []), f"the quarter to {report}"]
                     for f in sheet.facts:
                         if f.key == "earnings.next":
                             f.value, f.period = est.isoformat(), nxt["covers"]

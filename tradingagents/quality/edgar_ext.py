@@ -78,8 +78,12 @@ LINES: list[tuple[str, str, tuple[str, ...]]] = [
     ("lt_investments", "stock", ("OtherLongTermInvestments", "LongTermInvestments")),
     # XOM files only LongTermDebtAndCapitalLeaseObligations (noncurrent, with
     # finance leases): without it its EV counted current debt alone.
-    ("debt", "stock", ("LongTermDebt", "LongTermDebtNoncurrent", "DebtInstrumentCarryingAmount",
-                       "LongTermDebtAndCapitalLeaseObligations")),
+    # Noncurrent tags first: LongTermDebt is the total INCLUDING the current
+    # portion, and the current portion is added separately (review,
+    # 2026-10-10: MSFT's debt read $3B high, AAPL's $10.9B). A period filled
+    # from LongTermDebt has its current portion taken out in from_json.
+    ("debt", "stock", ("LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations", "LongTermDebt",
+                       "DebtInstrumentCarryingAmount")),
     ("debt_current", "stock", ("LongTermDebtCurrent", "DebtCurrent")),
     # Debt filed by instrument instead of as a total (REITs: Realty Income
     # tags NotesPayable, LoansPayable, CommercialPaper; eval 2026-10-09).
@@ -304,6 +308,16 @@ def from_json(cik: str, facts: dict, submissions: dict, as_of: str,
                     years[end] = value
         out.quarters[concept] = quarters
         out.years[concept] = years
+
+    # LongTermDebt includes the current portion: net it out where the current
+    # portion is tagged, so debt + debt_current counts each dollar once.
+    for table in (out.quarters, out.years):
+        for end, val in (table.get("debt") or {}).items():
+            current = (table.get("debt_current") or {}).get(end)
+            if val.tag in ("LongTermDebt", "DebtInstrumentCarryingAmount") and current is not None \
+                    and 0 < current.value < val.value:
+                val.value -= current.value
+                val.derivation = f"{val.tag} (total) less the current portion ({current.tag})"
 
     dei = (facts.get("facts") or {}).get("dei") or {}
     cover = [f for f in ((dei.get("EntityCommonStockSharesOutstanding") or {}).get("units") or {}).get("shares", [])

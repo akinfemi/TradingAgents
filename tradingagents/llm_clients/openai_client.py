@@ -49,6 +49,12 @@ def rate_limit_wait(exc: Exception, now: float | None = None) -> float:
     return min(max(wait, 1.0), RATE_LIMIT_MAX_WAIT) + random.uniform(0.5, 3.0)
 
 
+def _is_quota_error(exc: Exception) -> bool:
+    body = getattr(exc, "body", None)
+    body = body.get("error", body) if isinstance(body, dict) else {}
+    return "insufficient_quota" in {str((body or {}).get("code")), str((body or {}).get("type"))}
+
+
 class NormalizedChatOpenAI(ChatOpenAI):
     """ChatOpenAI with normalized content output and capability-aware binding.
 
@@ -79,7 +85,8 @@ class NormalizedChatOpenAI(ChatOpenAI):
             try:
                 return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
             except openai.RateLimitError as exc:
-                if attempt == RATE_LIMIT_ATTEMPTS - 1:
+                # An exhausted quota is a 429 too, and waiting won't refill it.
+                if attempt == RATE_LIMIT_ATTEMPTS - 1 or _is_quota_error(exc):
                     raise
                 time.sleep(rate_limit_wait(exc))
 
