@@ -1,5 +1,7 @@
 import os
+import random
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -11,6 +13,40 @@ from .api_key_env import get_api_key_env
 from .base_client import BaseLLMClient, normalize_content
 from .capabilities import get_capabilities
 from .validators import validate_model
+
+
+# Rate limits by the minute (OpenRouter caps a new account at 20 requests a
+# minute per model) outlast the SDK's retries, whose backoff tops out at 8s:
+# runs failed on 429s with two running at once (eval, 2026-10-10). On a 429
+# the call waits for the window the provider names, then tries again.
+RATE_LIMIT_ATTEMPTS = 6
+RATE_LIMIT_MAX_WAIT = 70.0
+
+
+def rate_limit_wait(exc: Exception, now: float | None = None) -> float:
+    """Seconds until the provider's rate window resets: OpenRouter's
+    X-RateLimit-Reset (epoch ms) in the error body, else Retry-After, else a
+    minute; clamped, with jitter so waiting runs don't wake together."""
+    now = time.time() if now is None else now
+    body = getattr(exc, "body", None)
+    body = body.get("error", body) if isinstance(body, dict) else {}
+    headers = ((body or {}).get("metadata") or {}).get("headers") or {}
+    wait = None
+    reset = headers.get("X-RateLimit-Reset") or headers.get("x-ratelimit-reset")
+    try:
+        if reset:
+            wait = float(reset) / 1000.0 - now
+    except (TypeError, ValueError):
+        wait = None
+    if wait is None:
+        response = getattr(exc, "response", None)
+        retry_after = getattr(response, "headers", {}).get("retry-after") if response is not None else None
+        try:
+            wait = float(retry_after) if retry_after else None
+        except (TypeError, ValueError):
+            wait = None
+    wait = 60.0 if wait is None else wait
+    return min(max(wait, 1.0), RATE_LIMIT_MAX_WAIT) + random.uniform(0.5, 3.0)
 
 
 class NormalizedChatOpenAI(ChatOpenAI):
@@ -34,6 +70,18 @@ class NormalizedChatOpenAI(ChatOpenAI):
 
     def invoke(self, input, config=None, **kwargs):
         return normalize_content(super().invoke(input, config, **kwargs))
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        # Every call path (plain, tool-bound, structured) comes through here.
+        import openai
+
+        for attempt in range(RATE_LIMIT_ATTEMPTS):
+            try:
+                return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            except openai.RateLimitError as exc:
+                if attempt == RATE_LIMIT_ATTEMPTS - 1:
+                    raise
+                time.sleep(rate_limit_wait(exc))
 
     def with_structured_output(self, schema, *, method=None, **kwargs):
         caps = get_capabilities(self.model_name)
