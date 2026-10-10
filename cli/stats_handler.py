@@ -16,6 +16,12 @@ class StatsCallbackHandler(BaseCallbackHandler):
         self.tool_calls = 0
         self.tokens_in = 0
         self.tokens_out = 0
+        # Cached prompt tokens, a subset of tokens_in (which stays the raw
+        # prompt count): reads from the provider's prompt cache and writes
+        # into it. They bill at their own rates, so cost estimates price them
+        # apart from the uncached rest.
+        self.cache_read = 0
+        self.cache_write = 0
         self.tool_calls_by_name: dict[str, int] = {}
         self.usage_by_model: dict[str, dict[str, int]] = {}
 
@@ -56,16 +62,43 @@ class StatsCallbackHandler(BaseCallbackHandler):
 
         with self._lock:
             per_model = self.usage_by_model.setdefault(
-                model_name, {"llm_calls": 0, "tokens_in": 0, "tokens_out": 0}
+                model_name,
+                {"llm_calls": 0, "tokens_in": 0, "tokens_out": 0, "cache_read": 0, "cache_write": 0},
             )
             per_model["llm_calls"] += 1
             if usage_metadata:
                 tokens_in = usage_metadata.get("input_tokens", 0)
                 tokens_out = usage_metadata.get("output_tokens", 0)
+                cache_read, cache_write = self._cache_tokens(usage_metadata)
                 self.tokens_in += tokens_in
                 self.tokens_out += tokens_out
+                self.cache_read += cache_read
+                self.cache_write += cache_write
                 per_model["tokens_in"] += tokens_in
                 per_model["tokens_out"] += tokens_out
+                per_model["cache_read"] += cache_read
+                per_model["cache_write"] += cache_write
+
+    @staticmethod
+    def _cache_tokens(usage_metadata: Any) -> tuple[int, int]:
+        """(cache_read, cache_write) from LangChain's input_token_details.
+
+        langchain-anthropic reports writes as ``cache_creation`` or, when the
+        response breaks them down by TTL, as ``ephemeral_5m_input_tokens`` /
+        ``ephemeral_1h_input_tokens`` with ``cache_creation`` zeroed;
+        langchain-openai (OpenRouter included) maps ``cached_tokens`` and
+        ``cache_write_tokens`` to ``cache_read`` / ``cache_creation``.
+        """
+        try:
+            details = usage_metadata.get("input_token_details") or {}
+            read = int(details.get("cache_read") or 0)
+            write = int(details.get("cache_creation") or 0) or (
+                int(details.get("ephemeral_5m_input_tokens") or 0)
+                + int(details.get("ephemeral_1h_input_tokens") or 0)
+            )
+        except (AttributeError, TypeError, ValueError):
+            return 0, 0
+        return read, write
 
     @staticmethod
     def _model_name(response: LLMResult, generation: Any) -> str:
@@ -105,6 +138,8 @@ class StatsCallbackHandler(BaseCallbackHandler):
                 "tool_calls": self.tool_calls,
                 "tokens_in": self.tokens_in,
                 "tokens_out": self.tokens_out,
+                "cache_read": self.cache_read,
+                "cache_write": self.cache_write,
                 "tool_calls_by_name": dict(self.tool_calls_by_name),
                 "usage_by_model": {
                     model: dict(usage) for model, usage in self.usage_by_model.items()
