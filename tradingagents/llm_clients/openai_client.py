@@ -52,7 +52,9 @@ def rate_limit_wait(exc: Exception, now: float | None = None) -> float:
 def _is_quota_error(exc: Exception) -> bool:
     body = getattr(exc, "body", None)
     body = body.get("error", body) if isinstance(body, dict) else {}
-    return "insufficient_quota" in {str((body or {}).get("code")), str((body or {}).get("type"))}
+    if not isinstance(body, dict):          # {"error": "<text>"} from some proxies
+        return "insufficient_quota" in str(body)
+    return "insufficient_quota" in {str(body.get("code")), str(body.get("type"))}
 
 
 class NormalizedChatOpenAI(ChatOpenAI):

@@ -800,15 +800,25 @@ def check_formulas(text: str, stage: str, field_name: str) -> list[LintFlag]:
     """Check 2 (part): an explicit (A / B − 1) × 100 = p% reproduces p."""
     flags = []
     for m in _FORMULA.finditer(text or ""):
-        a = float(m.group(1).replace(",", "")) * _SCALE_WORD[(m.group(2) or "").lower()]
-        b = float(m.group(3).replace(",", "")) * _SCALE_WORD[(m.group(4) or "").lower()]
-        stated = float(m.group(5).replace("−", "-").replace(",", ""))
-        if not b:
+        def value_and_half_unit(num: str, scale: str):
+            digits = num.replace(",", "")
+            decimals = len(digits.split(".")[1]) if "." in digits else 0
+            mult = _SCALE_WORD[(scale or "").lower()]
+            return float(digits) * mult, 0.5 * 10 ** -decimals * mult
+
+        a, da = value_and_half_unit(m.group(1), m.group(2))
+        b, db = value_and_half_unit(m.group(3), m.group(4))
+        raw = m.group(5).replace("−", "-").replace(",", "")
+        stated = float(raw)
+        stated_half = 0.5 * 10 ** -(len(raw.split(".")[1]) if "." in raw else 0)
+        if b - db <= 0:
             continue
         actual = (a / b - 1) * 100
-        # Inputs are rounded as written: allow what their last digit could move.
-        slack = max(0.15, abs(actual) * 0.004)
-        if abs(actual - stated) > slack:
+        # The inputs are rounded as written: the true result can be anywhere
+        # their last digits allow ("$1.02B / $145.0M" spans 599.5–607.4%).
+        low = ((a - da) / (b + db) - 1) * 100
+        high = ((a + da) / (b - db) - 1) * 100
+        if not low - stated_half - 0.05 <= stated <= high + stated_half + 0.05:
             flags.append(LintFlag(_severity(field_name, "arithmetic"), "arithmetic", stage, field_name,
                                   _sentence_at(text, m.start(), m.end())[:300],
                                   f"the formula gives {actual:.1f}%, not {stated:g}%"))

@@ -73,3 +73,12 @@ def test_an_exhausted_quota_is_not_waited_out():
         with pytest.raises(openai.RateLimitError):
             llm._generate([HumanMessage(content="hi")])
     assert sleep.call_count == 0
+
+
+@pytest.mark.unit
+def test_quota_check_tolerates_a_text_error_body():
+    from tradingagents.llm_clients.openai_client import _is_quota_error
+
+    assert _is_quota_error(SimpleNamespace(body={"error": "insufficient_quota: add credit"})) is True
+    assert _is_quota_error(SimpleNamespace(body={"error": "slow down"})) is False
+    assert _is_quota_error(SimpleNamespace(body=None)) is False

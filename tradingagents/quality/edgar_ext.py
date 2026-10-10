@@ -84,7 +84,8 @@ LINES: list[tuple[str, str, tuple[str, ...]]] = [
     # from LongTermDebt has its current portion taken out in from_json.
     ("debt", "stock", ("LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations", "LongTermDebt",
                        "DebtInstrumentCarryingAmount")),
-    ("debt_current", "stock", ("LongTermDebtCurrent", "DebtCurrent")),
+    # KO, HD and PEP tag their current debt with leases included.
+    ("debt_current", "stock", ("LongTermDebtCurrent", "DebtCurrent", "LongTermDebtAndCapitalLeaseObligationsCurrent")),
     # Debt filed by instrument instead of as a total (REITs: Realty Income
     # tags NotesPayable, LoansPayable, CommercialPaper; eval 2026-10-09).
     # Used only when no total above is tagged, so never double counted.
@@ -250,22 +251,42 @@ def _merge_predecessor(facts: dict, older: dict) -> dict:
     return merged
 
 
+def _merge_recent(subs: dict, older: dict) -> dict:
+    """The successor's submissions with the predecessor's recent filings after
+    its own (same columns, newest first within each)."""
+    new, old = ((subs.get("filings") or {}).get("recent") or {}), ((older.get("filings") or {}).get("recent") or {})
+    if not old:
+        return subs
+    merged = {k: [*(new.get(k) or []), *(old.get(k) or [])] for k in set(new) | set(old)
+              if isinstance(new.get(k, []), list) and isinstance(old.get(k, []), list)}
+    out = {**subs, "filings": {**(subs.get("filings") or {}), "recent": merged}}
+    out.setdefault("fiscalYearEnd", older.get("fiscalYearEnd"))
+    return out
+
+
 def load(ticker: str, as_of: str, n_quarters: int = 8, n_years: int = 2) -> Statements | None:
     """The filer's statements as known on ``as_of``, or None for a non-filer."""
     cik = cik_for(ticker)
     if cik is None:
         return None
     facts = _cached_json(_FACTS_URL.format(cik=cik), f"CIK{cik}.json")
-    if cik in PREDECESSORS:
-        try:
-            older = _cached_json(_FACTS_URL.format(cik=PREDECESSORS[cik]), f"CIK{PREDECESSORS[cik]}.json")
-            facts = _merge_predecessor(facts, older)
-        except Exception:  # noqa: BLE001 — the successor's own filings still stand
-            pass
     try:
         submissions = _cached_json(_SUBMISSIONS_URL.format(cik=cik), f"submissions-CIK{cik}.json")
     except Exception:  # noqa: BLE001 — identity and calendar degrade, statements don't
         submissions = {}
+    if cik in PREDECESSORS:
+        older_cik = PREDECESSORS[cik]
+        try:
+            facts = _merge_predecessor(facts, _cached_json(_FACTS_URL.format(cik=older_cik), f"CIK{older_cik}.json"))
+        except Exception:  # noqa: BLE001 — the successor's own filings still stand
+            pass
+        try:
+            # The filing history too, for the earnings calendar (XOM's new
+            # registrant lists filings only from July 2026).
+            submissions = _merge_recent(submissions, _cached_json(
+                _SUBMISSIONS_URL.format(cik=older_cik), f"submissions-CIK{older_cik}.json"))
+        except Exception:  # noqa: BLE001
+            pass
     return from_json(cik, facts, submissions, as_of, n_quarters, n_years)
 
 

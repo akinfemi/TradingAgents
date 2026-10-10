@@ -773,5 +773,8 @@ def test_an_explicit_growth_formula_is_checked():
     assert [f.kind for f in check_formulas(bad, "fundamentals_analyst", "fundamentals_report")] == ["arithmetic"]
     good = "Revenue jumped: ($1.016B / $145.0M − 1) × 100 = 600.7% sequential growth."
     assert check_formulas("($1.02B / $145.0M − 1) × 100 = 603.4%", "pm", "pm") == []   # right for its inputs
+    # Rounded inputs: the exact figures behind them give the stated result.
+    assert check_formulas("($1.02B / $145.0M − 1) × 100 = 600.7%", "pm", "pm") == []
+    assert check_formulas("($8.3B / $7.6B − 1) × 100 = 8.8%", "pm", "pm") == []
     assert check_formulas(good, "fundamentals_analyst", "fundamentals_report") == []
     assert check_formulas("($93.20B [F:x] / $77.67B − 1) = 20.0%", "pm", "pm") == []

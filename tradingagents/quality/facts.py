@@ -541,8 +541,12 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
     if base_end:
         scale, note = _length_scale(end, base_end, ends)
         base_cal = _q_label(base_end, ends, st.fy_end).calendar
+        # EPS rolls what common holders get, like ttm_eps (JPM: total net
+        # income put the rolled EPS $0.55 high).
+        income = "net_income_common" if ttm("net_income_common", end) is not None \
+            and v("net_income_common", base_end) is not None else "net_income"
         for concept, key in (("revenue", "revenue"), ("operating_income", "operating_income"),
-                             ("net_income", "net_income")):
+                             (income, "net_income")):
             total, now_q, base_q = ttm(concept, end), v(concept, end), v(concept, base_end)
             if total is None or now_q is None or base_q is None:
                 continue
@@ -550,7 +554,7 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
             add(f"ttm_next.{key}", rolled, "usd", f"ttm_{concept}_after_next_report_if_flat",
                 f"TTM [ttm_{concept}.{cal}] − {base_cal} [{concept}.{base_cal}] + {cal} [{concept}.{cal}]"
                 f"{note}: TTM after the next report if that quarter matches {cal}", f"next:{cal}")
-            if concept == "net_income" and dil_shares:
+            if key == "net_income" and dil_shares:
                 add("ttm_next.eps", rolled / dil_shares, "usd_per_share", "ttm_eps_after_next_report_if_flat",
                     f"[ttm_next.net_income] ÷ [{dil_key}]", f"next:{cal}")
 
@@ -887,6 +891,11 @@ def _next_earnings(st: edgar_ext.Statements, cols: list[QuarterCol], as_of: str)
         if f == "8-K" and "2.02" in str(items)
         and 0 < (date.fromisoformat(fd) - prior_end).days <= 75)
     if releases:
+        # The release nearest the year-ago 10-Q, not a mid-quarter update
+        # (a January preliminary or holiday-sales 8-K files under 2.02 too).
+        if year_ago:
+            anchor = date.fromisoformat(year_ago[0]["filed"])
+            releases = sorted(releases, key=lambda d: (abs((anchor - date.fromisoformat(d)).days), d))
         filed = date.fromisoformat(releases[0]) + timedelta(days=364)
         basis = (f"last year's results for the same quarter were released {releases[0]} (8-K, Item 2.02), "
                  "a year on")
@@ -1203,7 +1212,7 @@ def build(ticker: str, trade_date: str, run_started_at: str | None = None, asset
                 # quarter already reported (KO): drop the hurdles, roll the
                 # calendar on to the quarter after the filed one.
                 sheet.facts = [f for f in sheet.facts
-                               if not f.key.startswith(("next_base.", "next_hurdle.", "seg_hurdle."))]
+                               if not f.key.startswith(("next_base.", "next_hurdle.", "seg_hurdle.", "ttm_next."))]
                 nxt = (sheet.calendar or {}).get("earnings_next")
                 if nxt:
                     after = date.fromisoformat(report) + timedelta(days=91)
