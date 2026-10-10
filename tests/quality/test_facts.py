@@ -615,3 +615,19 @@ def test_anomaly_flags_say_only_what_the_figures_support():
     assert "Total debt moved" not in text and "Long-term debt moved" not in text
     assert "is not operating cash" not in text
     assert "Non-operating loss" in text and "understate" in text
+
+
+@pytest.mark.unit
+def test_next_report_hurdle_and_ev_ebita():
+    st, values, frame, ends = _synthetic()
+    values["revenue"][ends[-4]] = 0.7e9            # a weak year-ago base for the next report
+    values["amortization"] = {e: 50e6 for e in ends}
+    st.cover_shares = edgar_ext.Value(value=1e9, unit="shares", filed="2026-01-01", accn="x", tag="dei")
+    st.cover_shares_date = ends[-1]
+    cols = [facts._q_label(e, ends, st.fy_end) for e in ends[-5:]]
+    derived, _ = facts._derived(st, cols, values, 100.0, ends[-1])
+    got = {f.key: f.value for f in derived}
+    assert round(got["next_hurdle.revenue_flat"], 1) == 42.9      # flat at $1B vs a $0.7B base
+    assert got["next_base.revenue"] == 0.7e9
+    # EV $99B ÷ (TTM operating income $0.8B + amortization $0.2B)
+    assert got["ev_ebita.ttm"] == pytest.approx(99e9 / 1.0e9)

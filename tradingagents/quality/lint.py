@@ -1403,6 +1403,34 @@ def check_target_debt(decision: dict | None, facts: Facts) -> list[LintFlag]:
     return []
 
 
+_ONE_OFF = re.compile(r"(\d{4}Q[1-4]) gross margin .*?likely a one-off")
+_COMPARES = re.compile(r"\b(?:from|versus|vs\.?|compared|a year (?:earlier|ago)|year[- ]on[- ]year|turn(?:ed|around))\b",
+                       re.I)
+_CAVEAT = re.compile(r"one[- ]off|one[- ]time|charge|write[- ]?down|impairment|flatter|weak base", re.I)
+
+
+def check_one_off_bases(state: dict) -> list[LintFlag]:
+    """Check 8: a quarter the fact sheet flags as a likely one-off is not used as
+    a comparison base without saying so (AMD review: the thesis cited Data
+    Center's 2025Q2 loss as turnaround evidence beside the flag). A lead."""
+    sheet = state.get("fact_sheet") or {}
+    quarters = {m.group(1) for f in sheet.get("flags") or [] if (m := _ONE_OFF.search(f))}
+    if not quarters:
+        return []
+    flags = []
+    for stage, field_name, text in stage_texts(state):
+        if field_name not in LOAD_BEARING_FIELDS and not field_name.startswith("digest"):
+            continue
+        for q in quarters:
+            for m in re.finditer(re.escape(q), text):
+                sentence = _sentence_at(text, m.start(), m.end())
+                if _COMPARES.search(sentence) and not _CAVEAT.search(sentence):
+                    flags.append(LintFlag("minor", "one_off_base", stage, field_name, sentence[:300],
+                                          f"{q} is flagged as a likely one-off quarter: say so when using it as a base"))
+                    break
+    return flags
+
+
 def check_trigger_mix(digest: dict) -> list[LintFlag]:
     """Check 8: at least one exit trigger is a fundamental threshold, not only
     price levels and indicators. A lead for the editor, never a hold."""
@@ -1579,6 +1607,7 @@ def lint_state(state: dict) -> dict:
     flags.extend(check_margin_wording(digest))
     flags.extend(check_trigger_mix(digest))
     flags.extend(check_trigger_headroom(digest))
+    flags.extend(check_one_off_bases(state))
     flags.extend(check_target_debt(state.get("portfolio_decision"), facts))
     # Two figures in one sentence are one finding, not two.
     unique: dict[tuple, LintFlag] = {}

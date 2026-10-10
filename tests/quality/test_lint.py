@@ -751,3 +751,15 @@ def test_the_digest_gets_the_fact_sheet_flags():
                                   "fact_sheet": {"flags": ["Cash + short-term investments moved $115.63B"],
                                                  "unavailable": ["10-year Treasury yield unavailable"]}})
     assert "Fact-sheet flags and data gaps" in prompt and "$115.63B" in prompt and "Unavailable: 10-year" in prompt
+
+
+@pytest.mark.unit
+def test_a_flagged_one_off_quarter_used_as_a_base_is_a_lead():
+    from tradingagents.quality.lint import check_one_off_bases
+
+    state = {"fact_sheet": {"flags": ["2025Q2 gross margin (39.8%) is 13 points below the median of the other quarters "
+                                      "shown (53.3%): likely a one-off (an inventory charge)."]},
+             "final_trade_decision": "Data Center operating income improved from a loss of $155M in 2025Q2 to $2.1B.",
+             "report_digest": {"bull_thesis": "Margins recovered from 2025Q2's inventory charge."}}
+    flags = check_one_off_bases(state)
+    assert [f.field for f in flags] == ["pm"] and flags[0].kind == "one_off_base"

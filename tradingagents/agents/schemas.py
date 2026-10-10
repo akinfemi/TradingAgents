@@ -554,6 +554,11 @@ class ExitTrigger(DigestPoint):
         description="Where it fires, with deliberate headroom from today's value (not at it), e.g. 'below 60%'.",
     )
     check: str | None = Field(default=None, description="When it is next checked, e.g. 'Q3 report, Nov 4'.")
+    moves_to: str | None = Field(
+        default=None,
+        description="Which way the rating would move if it fires, e.g. 'toward Hold' or 'to Sell'. A condition "
+                    "that only confirms the call is not a trigger.",
+    )
 
 
 class RiskLens(BaseModel):
@@ -723,15 +728,18 @@ class ReportDigest(BaseModel):
     )
     exit_triggers: list[ExitTrigger] = Field(
         description=(
-            "The 3-4 conditions under which the decision says to exit, trim, "
-            "or reverse — the watchlist this report leaves behind. Each title "
+            "What would change the view: the 3-4 conditions that would make the "
+            "rating wrong and move it (for an Underweight, what would move it "
+            "toward Hold or above; a further slide that only confirms the call "
+            "is not one), each with moves_to — the watchlist this report leaves behind. Each title "
             "names the trigger, each detail says what observable change fires "
             "it, in one sentence of at most 240 characters. At least one is a "
             "fundamental threshold with its current value (segment growth, "
             "gross or operating margin, free cash flow, guidance), not a "
             "price level or indicator; at most one is price-based. Fill metric, "
-            "current, threshold and check for each; thresholds keep headroom "
-            "from today's value."
+            "current, threshold, check and moves_to for each; thresholds keep "
+            "headroom from today's value, and a year-on-year threshold is checked "
+            "against the next report's comparison base on the fact sheet."
         ),
     )
 

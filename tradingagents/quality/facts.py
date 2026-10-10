@@ -502,6 +502,11 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
         if ev_fact:
             add("ev_ebit.ttm", ev_fact.value / ttm_oi, "x", "ev_to_ttm_operating_income",
                 f"EV [ev] ÷ TTM operating income [ttm_operating_income.{cal}]", price_date)
+        ttm_amort = ttm("amortization", end)
+        if ev_fact and ttm_amort:
+            add("ev_ebita.ttm", ev_fact.value / (ttm_oi + ttm_amort), "x", "ev_to_ttm_operating_income_before_amortization",
+                f"EV [ev] ÷ (TTM operating income [ttm_operating_income.{cal}] + TTM amortization of acquired "
+                "intangibles): the operating multiple without acquisition amortization", price_date)
         if close and dil_shares:
             op_eps = ttm_oi * (1 - STATUTORY_TAX) / dil_shares
             add("pe_operating.ttm", close / op_eps, "x", "pe_on_operating_earnings",
@@ -511,6 +516,21 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
     if mcap_fact and ttm_fcf is not None and mcap_fact.value:
         add("fcf_yield.ttm", ttm_fcf / mcap_fact.value * 100, "pct", "fcf_yield_ttm",
             f"TTM free cash flow [ttm_fcf.{cal}] ÷ market cap [market_cap]", price_date)
+
+    # ---- R8: the next report's comparison base -----------------------------------
+    # A year-on-year threshold for the next quarter is only a test if it is hard
+    # to clear from where the business is now (AMD review: "Data Center growth
+    # above 60%" needed ~3% sequential growth on a weak year-ago quarter).
+    i_end = ends.index(end)
+    base_end = ends[i_end - 3] if i_end >= 3 else None
+    if base_end and v("revenue", base_end) and v("revenue", end):
+        base_cal = _q_label(base_end, ends, st.fy_end).calendar
+        add(f"next_base.revenue", v("revenue", base_end), "usd", "next_report_year_ago_revenue",
+            f"revenue of {base_cal} [revenue.{base_cal}], the year-ago quarter of the next report", base_cal)
+        add("next_hurdle.revenue_flat", (v("revenue", end) / v("revenue", base_end) - 1) * 100, "pct",
+            "next_report_growth_if_flat",
+            f"year-on-year growth the next report shows if revenue only holds at {cal}'s level: "
+            f"[revenue.{cal}] ÷ [revenue.{base_cal}] − 1", base_cal)
 
     # ---- R8: what the investments are --------------------------------------------
     # GOOGL 2026Q2: $186.6B of "marketable securities" held $99.5B of debt
@@ -972,8 +992,41 @@ def _add_segments(sheet: FactSheet, st: edgar_ext.Statements, trade_date: str) -
         sheet.facts.extend(facts)
         if facts:
             sheet.identity["segments_source"] = f"{filing['form']} for {filing['period']}, filed {filing['filed']}"
+            _add_segment_hurdles(sheet, st, trade_date, facts)
     except Exception as exc:  # noqa: BLE001
         logger.info("fact sheet: segments for %s skipped: %s", sheet.ticker, exc)
+
+
+def _add_segment_hurdles(sheet: FactSheet, st: edgar_ext.Statements, trade_date: str, latest: list[Fact]) -> None:
+    """Each segment's revenue in the next report's year-ago quarter, from that
+    quarter's own filing, and the year-on-year growth the next report shows if
+    the segment only holds at its latest level."""
+    ends = st.quarter_ends
+    if len(ends) < 4 or not sheet.quarters:
+        return
+    base_end, last_cal = ends[-4], sheet.quarters[-1].calendar
+    base_filing = next((r for r in edgar_ext.filings(st.submissions)
+                        if r["filed"] <= trade_date
+                        and abs((date.fromisoformat(r["period"]) - date.fromisoformat(base_end)).days) <= 10), None)
+    if base_filing is None:
+        return
+    base_cal = _q_label(base_end, ends, st.fy_end).calendar
+    rows = [r for r in edgar_ext.fetch_segments(st.cik, base_filing, [base_end])
+            if r["end"] == base_end and r["span"] == "Q" and r["concept"] == "revenue"]
+    now = {f.key.split(".")[1]: f for f in latest if f.key.startswith("seg_revenue.") and f.period == last_cal}
+    for r in rows:
+        slug = _slug(r["label"])
+        if slug not in now or not r["value"]:
+            continue
+        kind = "segment" if r["axis"] == "segment" else "product line"
+        sheet.facts.append(Fact(key=f"seg_revenue.{slug}.{base_cal}", value=r["value"], unit="usd", period=base_cal,
+                                concept=f"{kind}: {r['label']}", source="sec_xbrl",
+                                filed=f"{base_filing['filed']} {base_filing['accn']}"))
+        sheet.facts.append(Fact(
+            key=f"seg_hurdle.{slug}", value=round((now[slug].value / r["value"] - 1) * 100, 2), unit="pct",
+            period=base_cal, concept=f"{r['label']}: next report's growth if flat", source="computed",
+            derivation=f"[seg_revenue.{slug}.{last_cal}] ÷ [seg_revenue.{slug}.{base_cal}] − 1: the year-on-year "
+                       f"growth the next report shows if {r['label']} only holds at {last_cal}'s level"))
 
 
 def _confirm_from_news(nxt: dict, ticker: str, trade_date: str, identity: dict,
@@ -1266,6 +1319,7 @@ def render(sheet: FactSheet) -> str:
 
     derived = [f for f in sheet.facts if f.key.startswith(("ttm_", "market_cap", "ev", "runway_", "shares.cover",
                                                            "pe.", "pe_operating.", "fcf_yield"))
+               and not f.key.startswith(("next_base", "next_hurdle"))
                and "_hist." not in f.key]
     if derived:
         out.append("\n### Derived (computed from the figures above)")
@@ -1285,6 +1339,14 @@ def render(sheet: FactSheet) -> str:
             if "percentile" in got:
                 line += f"; today at percentile {got['percentile'].value:.0f} [F:{metric}_hist.percentile]"
             out.append(line + f" ({got['median'].derivation})")
+
+    hurdles = [f for f in sheet.facts if f.key.startswith(("next_base.", "next_hurdle.", "seg_hurdle."))]
+    if hurdles:
+        out.append("\n### The next report's comparison base (check any year-on-year threshold against it)")
+        out.extend(f"- [F:{f.key}] {_fmt(f)} — {f.derivation}" for f in hurdles)
+        out.append("A growth threshold at or below the 'if flat' figure is cleared by standing still: it tests "
+                   "nothing. State a threshold with the level it implies and the sequential change from the latest "
+                   "quarter, and set it where it would actually discriminate.")
 
     macro = [f for f in sheet.facts if f.key.startswith("macro.")]
     if macro:

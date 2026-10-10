@@ -28,7 +28,7 @@ def create_bear_researcher(llm):
             else "Asset fundamentals report (may be unavailable for crypto)"
         )
 
-        prompt = f"""You are a Bear Analyst making the case against investing in the {target_label}. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.
+        prompt = f"""You are a Bear Analyst making the case against investing in the {target_label}. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively. Make the strongest case, not only "valuation is high": competition (named rivals and what they ship), customer concentration, dilution the fact sheet flags (warrants, antidilutive securities), debt build-ups, and any one-off that flatters a year-on-year comparison.
 
 Key points to focus on:
 
