@@ -46,6 +46,9 @@ LINES: list[tuple[str, str, tuple[str, ...]]] = [
     ("non_operating", "flow", ("NonoperatingIncomeExpense",)),
     ("warrant_fair_value", "flow", ("FairValueAdjustmentOfWarrants",)),
     ("net_income", "flow", ("NetIncomeLoss",)),
+    # R8: EPS on what common holders get (preferred-heavy banks: JPM, BAC).
+    ("net_income_common", "flow", ("NetIncomeLossAvailableToCommonStockholdersDiluted",
+                                   "NetIncomeLossAvailableToCommonStockholdersBasic")),
     ("eps_basic", "flow", ("EarningsPerShareBasic",)),
     ("eps_diluted", "flow", ("EarningsPerShareDiluted",)),
     ("sbc", "flow", ("ShareBasedCompensation", "AllocatedShareBasedCompensationExpense")),
@@ -67,6 +70,12 @@ LINES: list[tuple[str, str, tuple[str, ...]]] = [
     # in fiscal 2027; a missing tag reads as a cash crash (staging, 2026-10-08).
     ("sti", "stock", ("ShortTermInvestments", "AvailableForSaleSecuritiesDebtSecuritiesCurrent",
                       "MarketableSecuritiesCurrent", "DebtSecuritiesCurrent")),
+    # R8: what the investments are (GOOGL, 2026-10-10: $186.6B of "marketable
+    # securities" held $99.5B of debt securities and ~$87B of marked-up equity).
+    ("afs_debt", "stock", ("AvailableForSaleSecuritiesDebtSecurities",)),
+    ("equity_securities_fv", "stock", ("EquitySecuritiesFvNi", "EquitySecuritiesFvNiCurrent")),
+    ("equity_nonmarketable", "stock", ("EquitySecuritiesWithoutReadilyDeterminableFairValueAmount",)),
+    ("lt_investments", "stock", ("OtherLongTermInvestments", "LongTermInvestments")),
     ("debt", "stock", ("LongTermDebt", "LongTermDebtNoncurrent", "DebtInstrumentCarryingAmount")),
     ("debt_current", "stock", ("LongTermDebtCurrent", "DebtCurrent")),
     # Debt filed by instrument instead of as a total (REITs: Realty Income
@@ -272,24 +281,27 @@ def from_json(cik: str, facts: dict, submissions: dict, as_of: str,
         latest = max(cover, key=lambda f: (f["filed"], f["end"]))
         out.cover_shares = _val(latest, "shares", "dei:EntityCommonStockSharesOutstanding")
         out.cover_shares_date = latest["end"]
-        _rescale_thousands(out, [(f["end"], float(f["val"])) for f in cover])
+        _rescale_thousands(out, [(f["end"], float(f["val"]), f["filed"]) for f in cover])
     return out
 
 
-def _rescale_thousands(st: Statements, cover: list[tuple[str, float]]) -> None:
+def _rescale_thousands(st: Statements, cover: list[tuple[str, float, str]]) -> None:
     """Some filers tag share counts in thousands in some filings (ONDS's Q1 2026
     10-Q: 445,089 weighted shares beside 495.8M on its cover). A weighted count
     under 1% of the nearest cover-page count is read as thousands and scaled,
     with the derivation saying so."""
-    def nearest_cover(end: str) -> float | None:
+    def nearest_cover(filed: str) -> float | None:
+        # The cover count filed nearest the value itself, so both are on one
+        # split basis: a count restated after a reverse split is not compared
+        # with a pre-split cover (WKHS: 1.21M restated shares scaled ×1,000).
         if not cover:
             return None
-        return min(cover, key=lambda c: abs((date.fromisoformat(c[0]) - date.fromisoformat(end)).days))[1]
+        return min(cover, key=lambda c: abs((date.fromisoformat(c[2]) - date.fromisoformat(filed)).days))[1]
 
     for table in (st.quarters, st.years):
         for end, v in [kv for concept in ("shares_weighted", "shares_diluted")
                        for kv in (table.get(concept) or {}).items()]:
-            ref = nearest_cover(end)
+            ref = nearest_cover(v.filed)
             if ref and 0 < v.value < ref / 100:
                 v.derivation = f"filed as {v.value:,.0f}; scaled ×1,000 (tagged in thousands by the filer)"
                 v.value *= 1000

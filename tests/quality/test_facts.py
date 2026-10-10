@@ -483,6 +483,14 @@ def _synthetic(n=12, split_after=None, gm_dip=None, warrants_at=None, oi=200e6, 
     if warrants_at is not None:
         values["warrants_outstanding"][ends[warrants_at]] = 9e7
     st = edgar_ext.Statements(cik="0", as_of=ends[-1], fy_end=(12, 31), quarter_ends=ends, year_ends=[])
+    # Counts as filed: each 10-Q about a month after its quarter end, so a
+    # count for a quarter before the split was filed before it too.
+    from datetime import date as _d, timedelta as _td
+    for concept in ("shares_weighted", "shares_diluted"):
+        st.quarters[concept] = {
+            e: edgar_ext.Value(value=values[concept][e], unit="shares",
+                               filed=(_d.fromisoformat(e) + _td(days=30)).isoformat(), accn="x", tag=concept)
+            for e in ends}
     frame = pd.DataFrame({"Date": pd.date_range(ends[0], ends[-1], freq="D").strftime("%Y-%m-%d")})
     frame["Close"] = 100.0
     return st, values, frame, ends
@@ -492,7 +500,7 @@ def _synthetic(n=12, split_after=None, gm_dip=None, warrants_at=None, oi=200e6, 
 def test_valuation_history_adjusts_counts_filed_before_a_split():
     st, values, frame, ends = _synthetic(split_after="2024-06-30")
     hist = {f.key: f.value for f in facts._valuation_history(st, values, frame, {"ev_sales": 25.0, "pe": 160.0},
-                                                             ends[-1], splits=[("2024-07-15", 10.0)])}
+                                                             ends[-1], splits=[("2024-08-15", 10.0)])}
     # $100 × 1B shares − $2B cash + $1B debt = $99B EV on $4B TTM revenue, every quarter.
     assert hist["ev_sales_hist.low"] == hist["ev_sales_hist.high"] == 24.75
     assert hist["ev_sales_hist.percentile"] == 100
@@ -500,6 +508,42 @@ def test_valuation_history_adjusts_counts_filed_before_a_split():
     # Without the split, the pre-split quarters read 10x too cheap.
     unadjusted = {f.key: f.value for f in facts._valuation_history(st, values, frame, {"ev_sales": 25.0}, ends[-1])}
     assert unadjusted["ev_sales_hist.low"] < 3
+    # A count a later filing restated (filed after the split) is not scaled
+    # again. (ASC 260: a filing after a split shows restated counts, so the
+    # filed date says which basis a count is on.)
+    for concept in ("shares_weighted", "shares_diluted"):
+        for e, val in st.quarters[concept].items():
+            if e <= "2024-06-30":
+                val.value *= 10
+                val.filed = "2024-09-01"
+    restated = {f.key: f.value for f in facts._valuation_history(st, values, frame, {"ev_sales": 25.0}, ends[-1],
+                                                                 splits=[("2024-08-15", 10.0)])}
+    assert restated["ev_sales_hist.low"] == restated["ev_sales_hist.high"] == 24.75
+
+
+@pytest.mark.unit
+def test_valuation_history_after_a_reverse_split_and_heavy_issuance():
+    # 1-for-10 reverse split in mid-2024, then 5x issuance: the old heuristic
+    # (nearest to today's count) picked the unscaled count (WKHS, review 2026-10-10).
+    st, values, frame, ends = _synthetic()
+    for concept in ("shares_weighted", "shares_diluted"):
+        for e, val in st.quarters[concept].items():
+            # Filed before the split: the old basis; after it: restated.
+            val.value = 1e10 if val.filed < "2024-07-15" else (1e9 if e <= "2025-06-30" else 5e9)
+    frame["Close"] = 100.0
+    hist = {f.key: f.value for f in facts._valuation_history(st, values, frame, {"ev_sales": 25.0}, ends[-1],
+                                                             splits=[("2024-07-15", 0.1)])}
+    # Pre-split: 1e10 × 0.1 = 1e9 shares, the same as the year after the split.
+    assert hist["ev_sales_hist.low"] == 24.75
+
+
+@pytest.mark.unit
+def test_implausible_history_is_withheld():
+    st, values, frame, ends = _synthetic()
+    for e in ends[3:9]:
+        values["revenue"][e] = -5e9           # negative-revenue quarters (a reversal)
+    hist = facts._valuation_history(st, values, frame, {"ev_sales": 25.0}, ends[-1])
+    assert not any(f.key.startswith("ev_sales_hist") for f in hist)
 
 
 @pytest.mark.unit

@@ -237,6 +237,12 @@ MATERIAL_LIABILITIES = 0.25
 # basic weighted shares.
 ONE_OFF_MARGIN_PTS = 8.0
 DILUTION_FLAG = 0.03
+# Anomalies: a balance line moving this share in a quarter and at least this
+# much; non-operating income at this share of net income.
+ANOMALY_QOQ = 0.30
+ANOMALY_MIN_USD = 1e9
+ANOMALY_NONOP_SHARE = 0.25
+STATUTORY_TAX = 0.21
 # A cover-page share count is the latest count when it is current: older than
 # this before the run, it's another era (Ford's companyfacts end its dei
 # series in 2011).
@@ -424,30 +430,71 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
                     f"EV ÷ ({cal} revenue × 4)", price_date)
 
     # ---- R8: earnings multiples ------------------------------------------------
-    # Per-share lines are never derived for a Q4, so TTM EPS is TTM net income
-    # over the latest diluted weighted count rather than a sum of quarters.
-    ttm_ni = ttm("net_income", end)
-    dil_shares = v("shares_diluted", end) or v("shares_weighted", end)
-    dil_key = f"shares_diluted.{cal}" if v("shares_diluted", end) else f"shares_weighted.{cal}"
+    ev_fact = next((f for f in facts if f.key == "ev"), None)
+    mcap_fact = next((f for f in facts if f.key == "market_cap"), None)
+    window = ends[ends.index(end) - 3:ends.index(end) + 1] if ends.index(end) >= 3 else []
+    # Banks, REITs and others file no operating income: their profit test is
+    # net income (JPM, O: no OperatingIncomeLoss in any quarter).
+    has_oi = any(v("operating_income", e) is not None for e in window)
+    ttm_oi = ttm("operating_income", end)
+    common = ttm("net_income_common", end)
+    ttm_ni = common if common is not None else ttm("net_income", end)
+    ni_key = f"ttm_net_income_common.{cal}" if common is not None else f"ttm_net_income.{cal}"
+    if common is not None:
+        add(f"ttm_net_income_common.{cal}", common, "usd", "ttm_net_income_to_common",
+            f"sum of the four quarters to {end}, net income available to common holders", f"TTM:{cal}")
+    profitable = (ttm_oi is not None and ttm_oi > 0) if has_oi else (ttm_ni is not None and ttm_ni > 0)
+    # Per-share lines are never derived for a Q4: the latest diluted count, or
+    # the previous quarter's when the latest is a fiscal Q4.
+    prev_q = edgar_ext._prev_quarter_end(end, ends)
+    dil_shares, dil_key = None, None
+    for concept, at in (("shares_diluted", end), ("shares_diluted", prev_q), ("shares_weighted", end),
+                        ("shares_weighted", prev_q)):
+        if at and v(concept, at):
+            dil_shares = v(concept, at)
+            dil_key = f"{concept}.{_q_label(at, ends, st.fy_end).calendar}"
+            break
     if ttm_ni is not None and dil_shares:
         ttm_eps = ttm_ni / dil_shares
         add(f"ttm_eps.{cal}", ttm_eps, "usd_per_share", "ttm_eps_gaap",
-            f"TTM net income [ttm_net_income.{cal}] ÷ {cal} weighted shares [{dil_key}] (GAAP)", f"TTM:{cal}")
-        ttm_oi_ = ttm("operating_income", end)
-        if close and ttm_eps > 0 and ttm_oi_ is not None and ttm_oi_ > 0:
+            f"TTM net income [{ni_key}] ÷ weighted diluted shares [{dil_key}] (GAAP)", f"TTM:{cal}")
+        if close and ttm_eps > 0 and profitable:
             add("pe.ttm", close / ttm_eps, "x", "pe_ttm_gaap",
                 f"close ({price_date}) ÷ TTM GAAP EPS [ttm_eps.{cal}]; GAAP earnings include acquisition "
-                "amortization and one-off items", price_date)
+                "amortization, non-operating gains and one-off items", price_date)
     eps_q = v("eps_diluted", end)
-    if close and eps_q and eps_q > 0 and (v("operating_income", end) or 0) > 0:
-        add("pe.run_rate", close / (eps_q * 4), "x", "pe_run_rate_gaap",
-            f"close ({price_date}) ÷ ({cal} diluted EPS [eps_diluted.{cal}] × 4)", price_date)
+    eps_basis = f"{cal} diluted EPS [eps_diluted.{cal}]"
+    if eps_q is None and v("net_income", end) is not None and dil_shares:
+        eps_q = v("net_income", end) / dil_shares
+        eps_basis = f"{cal} net income [net_income.{cal}] ÷ [{dil_key}] (a fiscal Q4 files no quarterly EPS)"
+    q_profitable = (v("operating_income", end) or 0) > 0 if has_oi else (v("net_income", end) or 0) > 0
+    if close and eps_q and eps_q > 0 and q_profitable:
+        add("pe.run_rate", close / (eps_q * 4), "x", "pe_run_rate_gaap", f"close ({price_date}) ÷ ({eps_basis} × 4)",
+            price_date)
+    # Operating multiples: what GOOGL's $98B non-operating gain can't distort.
+    if ttm_oi is not None and ttm_oi > 0:
+        if ev_fact:
+            add("ev_ebit.ttm", ev_fact.value / ttm_oi, "x", "ev_to_ttm_operating_income",
+                f"EV [ev] ÷ TTM operating income [ttm_operating_income.{cal}]", price_date)
+        if close and dil_shares:
+            op_eps = ttm_oi * (1 - STATUTORY_TAX) / dil_shares
+            add("pe_operating.ttm", close / op_eps, "x", "pe_on_operating_earnings",
+                f"close ({price_date}) ÷ (TTM operating income [ttm_operating_income.{cal}] × (1 − "
+                f"{STATUTORY_TAX:.0%} statutory tax) ÷ [{dil_key}]); excludes non-operating items", price_date)
     ttm_fcf = (ttm("ocf", end) - ttm("capex", end)) if ttm("ocf", end) is not None and ttm("capex", end) is not None else None
-    mcap_fact = next((f for f in facts if f.key == "market_cap"), None)
     if mcap_fact and ttm_fcf is not None and mcap_fact.value:
         add("fcf_yield.ttm", ttm_fcf / mcap_fact.value * 100, "pct", "fcf_yield_ttm",
             f"TTM free cash flow [ttm_fcf.{cal}] ÷ market cap [market_cap]", price_date)
 
+    # ---- R8: what the investments are --------------------------------------------
+    # GOOGL 2026Q2: $186.6B of "marketable securities" held $99.5B of debt
+    # securities; the rest was equity marked to market, not cash.
+    sti_now, afs = v("sti", end), v("afs_debt", end)
+    if sti_now and afs is not None and sti_now - afs > max(0.1 * sti_now, 1e9):
+        add(f"sti_equity.{cal}", sti_now - afs, "usd", "marketable_equity_in_short_term_investments",
+            f"short-term investments [sti.{cal}] − debt securities available for sale [afs_debt.{cal}]", f"at {end}")
+        add(f"cash_debt_securities.{cal}", (v("cash", end) or 0) + afs, "usd", "cash_and_debt_securities",
+            f"cash [cash.{cal}] + debt securities [afs_debt.{cal}]: the cash-like part", f"at {end}")
     # ---- flags: facts the stages must address --------------------------------
     oi, ni, nonop = v("operating_income", end), v("net_income", end), v("non_operating", end)
     if oi is not None and ni is not None and (oi < 0) != (ni < 0):
@@ -491,7 +538,11 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
             gms[c.calendar] = g_ / r_ * 100
     for qcal, gm in gms.items():
         others = [g for k, g in gms.items() if k != qcal]
-        if len(others) >= 3 and abs(gm - median(others)) >= ONE_OFF_MARGIN_PTS:
+        # Only a business with a steady positive margin has a "normal" to
+        # depart from (WKHS's −190% margins flagged every quarter).
+        if len(others) < 3 or median(others) <= 0 or min(others) < 0 or not -100 < gm < 100:
+            continue
+        if abs(gm - median(others)) >= ONE_OFF_MARGIN_PTS:
             med = median(others)
             flags.append(
                 f"{qcal} gross margin ({gm:.1f}%) is {abs(gm - med):.0f} points {'below' if gm < med else 'above'} "
@@ -515,6 +566,44 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
                     f"{n / basic * 100:.1f}% of basic weighted shares. Weighted-share growth understates it; "
                     "when they can convert (price or milestone conditions) comes only from the filings or news."
                 )
+    # R8: anomalies a reader would ask about first (GOOGL 2026Q2: cash + short-
+    # term investments up $116B in a quarter with −$5.9B FCF and a $98B gain).
+    if prev:
+        fcf_q = (v("ocf", end) - v("capex", end)) if v("ocf", end) is not None and v("capex", end) is not None else None
+        cs_now = (v("cash", end) or 0) + (v("sti", end) or 0) if v("cash", end) is not None else None
+        cs_prev = (v("cash", prev) or 0) + (v("sti", prev) or 0) if v("cash", prev) is not None else None
+        if cs_now is not None and cs_prev:
+            move = cs_now - cs_prev
+            unexplained = move - (fcf_q or 0)
+            if abs(move) / cs_prev >= ANOMALY_QOQ and abs(unexplained) >= max(ANOMALY_MIN_USD, 0.1 * cs_prev):
+                flags.append(
+                    f"Cash + short-term investments moved {_m(move)} ({move / cs_prev * 100:+.0f}%) in {cal} while "
+                    f"free cash flow was {_m(fcf_q)}: {_m(unexplained)} is not operating cash. Check investments "
+                    "marked to market or reclassified, borrowing, and stock sales before calling it a cushion; "
+                    "say what drove it or that the filings don't say."
+                )
+        for concept, label in (("debt", "Long-term debt"), ("equity", "Stockholders' equity"),
+                               ("goodwill", "Goodwill"), ("liabilities", "Total liabilities")):
+            now_, then_ = v(concept, end), v(concept, prev)
+            if now_ is not None and then_ and abs(now_ - then_) / abs(then_) >= ANOMALY_QOQ \
+                    and abs(now_ - then_) >= ANOMALY_MIN_USD:
+                flags.append(f"{label} moved {_m(now_ - then_)} ({(now_ / then_ - 1) * 100:+.0f}%) in {cal} "
+                             f"[{concept}.{cal}]: name the cause (borrowing, an acquisition, a revaluation) "
+                             "where it matters to the case.")
+    if prior and v("debt", end) is not None and v("debt", prior):
+        total_now = (v("debt", end) or 0) + (v("debt_current", end) or 0)
+        total_then = (v("debt", prior) or 0) + (v("debt_current", prior) or 0)
+        if total_then and total_now / total_then - 1 >= 0.5 and total_now - total_then >= ANOMALY_MIN_USD:
+            flags.append(f"Debt rose from {_m(total_then)} to {_m(total_now)} in a year: say what it funds "
+                         "(capex, buybacks, an acquisition) and weigh it in the bear case.")
+    if nonop is not None and ni and abs(nonop) >= ANOMALY_NONOP_SHARE * abs(ni) and abs(nonop) >= ANOMALY_MIN_USD:
+        flags.append(f"Non-operating income of {_m(nonop)} in {cal} is {abs(nonop) / abs(ni) * 100:.0f}% of net "
+                     f"income [non_operating.{cal}]: earnings-based figures that include it (net income, EPS, P/E) "
+                     "overstate the operating business; use operating income, EV/EBIT or the operating P/E.")
+    if sti_now and afs is not None and sti_now - afs > max(0.1 * sti_now, 1e9):
+        flags.append(f"Of {_m(sti_now)} short-term investments in {cal}, {_m(sti_now - afs)} is not debt securities "
+                     f"[sti_equity.{cal}]: likely marketable equity at market value. It is a volatile position, not "
+                     "cash: keep it apart from liquidity and say how the target treats it.")
     if prior and v("shares_weighted", end) and v("shares_weighted", prior):
         growth = v("shares_weighted", end) / v("shares_weighted", prior) - 1
         if growth > 0.25:
@@ -545,84 +634,100 @@ def _close_on(frame: pd.DataFrame | None, day: str) -> float | None:
     return float(frame.loc[mask, "Close"].iloc[-1])
 
 
-def _splits(ticker: str, trade_date: str) -> list[tuple[str, float]]:
-    """(date, ratio) of the stock's splits up to the trade date (Yahoo)."""
-    import yfinance as yf
-
-    out = []
-    for when, ratio in yf.Ticker(ticker).splits.items():
-        day = str(when)[:10]
-        if day <= trade_date and ratio and ratio > 0 and ratio != 1:
-            out.append((day, float(ratio)))
-    return out
+# Bounds outside which a historical multiple is a data error, not a market
+# price (WKHS, a reverse-split micro-cap with a negative-revenue quarter, read
+# −3,256,158x): the point is dropped, and the series withheld if many are.
+_PLAUSIBLE = {"ev_sales": (0.0, 500.0), "ev_ebit": (0.0, 1000.0), "pe": (0.0, 2000.0)}
 
 
 def _valuation_history(st: edgar_ext.Statements, values: dict, frame: pd.DataFrame | None,
                        current: dict[str, float | None], price_date: str | None,
                        splits: list[tuple[str, float]] | None = None) -> list[Fact]:
-    """EV/TTM sales and TTM P/E at each past quarter end (price at the quarter
-    end, that quarter's weighted shares, cash and debt), as low / median /
-    high and today's percentile. The anchor a target multiple is argued
-    against (AMD review, 2026-10-10: "assumed 18x" with nothing behind it)."""
+    """EV/TTM sales, EV/TTM operating income and TTM P/E at each past quarter
+    end, as low / median / high and today's percentile: the anchor a target
+    multiple is argued against (AMD review, 2026-10-10: "assumed 18x" with
+    nothing behind it).
+
+    ``frame`` holds split-only closes (not dividend-adjusted). A share count
+    filed before a split is scaled by that split; one filed after it was
+    restated already. Yahoo lists spin-offs as splits too, and adjusts its
+    prices by the same factor, so the market cap stays right either way."""
     ends = st.quarter_ends
 
     def v(concept, end):
         return values.get(concept, {}).get(end)
 
-    latest_shares = next((v("shares_weighted", e) for e in reversed(ends) if v("shares_weighted", e)), None)
-
-    def split_adjusted(count, end):
-        # Prices are split-adjusted; counts filed before a split are not,
-        # unless a later filing restated them. Of the count as filed and the
-        # count scaled by the splits since, take the one nearer today's count
-        # (NVDA: a 10-for-1 split in 2024 put its 2022 EV/sales at 1.2x).
-        factor = 1.0
-        for day, ratio in splits or []:
-            if day > end:
-                factor *= ratio
-        if factor == 1.0 or not latest_shares:
-            return count
-        scaled = count * factor
-        return scaled if abs(math.log(scaled / latest_shares)) < abs(math.log(count / latest_shares)) else count
-
-    def shares_at(i, concept="shares_weighted"):
-        # Q4 weighted counts aren't derived; use the nearest quarter's.
+    def count_at(concept, i):
+        # Q4 counts aren't derived: the nearest quarter's.
         for j in (i, i - 1, i + 1):
-            if 0 <= j < len(ends) and v(concept, ends[j]):
-                return split_adjusted(v(concept, ends[j]), ends[i])
+            if not 0 <= j < len(ends):
+                continue
+            filed = st.quarters.get(concept, {}).get(ends[j])
+            if filed is None or not filed.value:
+                continue
+            factor = 1.0
+            for day, ratio in splits or []:
+                if ends[i] < day and (filed.filed or "") < day:
+                    factor *= ratio
+            return filed.value * factor
         return None
 
-    points: dict[str, list[tuple[str, float]]] = {"ev_sales": [], "pe": []}
+    has_oi = any(v("operating_income", e) is not None for e in ends)
+    points: dict[str, list[tuple[str, float]]] = {"ev_sales": [], "ev_ebit": [], "pe": []}
+    seen = {k: 0 for k in points}
     for i in range(3, len(ends)):
         end, window = ends[i], ends[i - 3:i + 1]
-        px, sh = _close_on(frame, end), shares_at(i)
-        if not px or not sh:
+        span_days = (date.fromisoformat(window[-1]) - date.fromisoformat(window[0])).days
+        if not 240 <= span_days <= 310:      # four consecutive quarters, no gap
+            continue
+        px, sh = _close_on(frame, end), count_at("shares_weighted", i)
+        if not px or not sh or sh <= 0:
             continue
         label = _q_label(end, ends, st.fy_end).calendar
         revs = [v("revenue", e) for e in window]
-        cash = v("cash", end)
-        if current.get("ev_sales") is not None and all(revs) and cash is not None:
-            debt = (v("debt", end) or 0) + (v("debt_current", end) or 0)
-            if v("debt", end) is None and v("debt_current", end) is None:
-                debt = sum(v(c, end) or 0 for c in _DEBT_PARTS)
-            ev = px * sh - cash - (v("sti", end) or 0) + debt
-            points["ev_sales"].append((label, ev / sum(revs)))
-        nis = [v("net_income", e) for e in window]
         ois = [v("operating_income", e) for e in window]
-        dil = shares_at(i, "shares_diluted") or sh
-        # A P/E only where the profit is operating, not a non-operating gain.
-        if all(x is not None for x in nis + ois) and sum(nis) > 0 and sum(ois) > 0:
+        nis = [v("net_income_common", e) for e in window]
+        if any(x is None for x in nis):
+            nis = [v("net_income", e) for e in window]
+        cash = v("cash", end)
+        ev = None
+        if cash is not None:
+            debt_tagged = v("debt", end) is not None or v("debt_current", end) is not None
+            debt = (v("debt", end) or 0) + (v("debt_current", end) or 0)
+            if not debt_tagged:
+                debt = sum(v(c, end) or 0 for c in _DEBT_PARTS)
+                liab, eq = v("liabilities", end), v("equity", end)
+                assets = (liab or 0) + (eq or 0)
+                other = (liab or 0) - (v("derivative_liabilities", end) or 0)
+                if not debt and (liab is None or eq is None or assets <= 0 or other > MATERIAL_LIABILITIES * assets):
+                    debt = None
+            if debt is not None:
+                ev = px * sh - cash - (v("sti", end) or 0) + debt
+        if ev is not None and current.get("ev_sales") is not None and all(r is not None for r in revs) \
+                and sum(revs) > 0:
+            seen["ev_sales"] += 1
+            points["ev_sales"].append((label, ev / sum(revs)))
+        if ev is not None and all(x is not None for x in ois) and sum(ois) > 0:
+            seen["ev_ebit"] += 1
+            points["ev_ebit"].append((label, ev / sum(ois)))
+        profitable = (all(x is not None for x in ois) and sum(ois) > 0) if has_oi else True
+        if all(x is not None for x in nis) and sum(nis) > 0 and profitable:
+            dil = count_at("shares_diluted", i) or sh
+            seen["pe"] += 1
             points["pe"].append((label, px / (sum(nis) / dil)))
 
     facts: list[Fact] = []
-    for metric, what in (("ev_sales", "EV ÷ TTM revenue"), ("pe", "price ÷ TTM GAAP EPS")):
-        series = points[metric][-HIST_QUARTERS:]
-        if len(series) < HIST_MIN_POINTS:
+    for metric, what in (("ev_sales", "EV ÷ TTM revenue"), ("ev_ebit", "EV ÷ TTM operating income"),
+                         ("pe", "price ÷ TTM GAAP EPS")):
+        lo, hi = _PLAUSIBLE[metric]
+        raw = points[metric][-HIST_QUARTERS:]
+        series = [(q, x) for q, x in raw if math.isfinite(x) and lo < x < hi]
+        if len(series) < HIST_MIN_POINTS or len(series) < 0.8 * len(raw):
             continue
         vals = sorted(x for _, x in series)
         span = f"{series[0][0]}–{series[-1][0]}"
-        how = (f"{what} at each of {len(series)} quarter ends {span} (close at the quarter end, that "
-               "quarter's weighted shares, cash and debt)")
+        how = (f"{what} at each of {len(series)} quarter ends {span} (the close at the quarter end, adjusted for "
+               "splits only; that quarter's weighted shares on the same split basis; cash and debt then)")
         for stat, value in (("low", vals[0]), ("median", median(vals)), ("high", vals[-1])):
             facts.append(Fact(key=f"{metric}_hist.{stat}", value=round(value, 2), unit="x", period=span,
                               concept=f"{metric}_history_{stat}", source="computed", derivation=how))
@@ -632,7 +737,7 @@ def _valuation_history(st: edgar_ext.Statements, values: dict, frame: pd.DataFra
             facts.append(Fact(key=f"{metric}_hist.percentile", value=round(pct), unit="ratio", period=price_date,
                               concept=f"{metric}_percentile_in_history", source="computed",
                               derivation=f"share of the {len(series)} quarter-end values at or below today's "
-                                         f"{now:.2f}x, in percent"))
+                                         f"{now:.2f}x, in percent (today's uses the cover-page share count)"))
     return facts
 
 
@@ -858,7 +963,7 @@ def _confirm_from_news(nxt: dict, ticker: str, trade_date: str, identity: dict,
 def build(ticker: str, trade_date: str, run_started_at: str | None = None, asset_type: str = "stock",
           *, statements: edgar_ext.Statements | None = None, ohlcv: pd.DataFrame | None = None,
           offline: bool = False, n_quarters: int = 5, news_text: str | None = None,
-          describe=None) -> FactSheet:
+          describe=None, history: tuple[pd.DataFrame, list[tuple[str, float]]] | None = None) -> FactSheet:
     """The fact sheet for one run. Never raises.
 
     ``describe``: optional ``fn(excerpt) -> str`` that summarises the 10-K's
@@ -867,6 +972,9 @@ def build(ticker: str, trade_date: str, run_started_at: str | None = None, asset
     sheet = FactSheet(ticker=ticker.upper(), asset_type=asset_type, trade_date=trade_date,
                       built_at=datetime.now(UTC).isoformat(timespec="seconds"))
     close, last_bar, frame = None, None, ohlcv
+    history_inputs = None
+    # Tests pass split-only closes and splits; live runs fetch them.
+    history_frame, history_splits = history if history is not None else (None, None)
     try:
         if frame is None:
             from tradingagents.dataflows.vendors.yahoo.ohlcv import load_ohlcv
@@ -900,15 +1008,7 @@ def build(ticker: str, trade_date: str, run_started_at: str | None = None, asset
             derived, flags = _derived(st, cols, values, close, last_bar, sheet.unavailable)
             sheet.facts.extend(derived)
             sheet.flags.extend(flags)
-            current = {"ev_sales": sheet.value("ev_sales.ttm"), "pe": sheet.value("pe.ttm")}
-            splits = None
-            if not offline:
-                try:
-                    splits = _splits(ticker, trade_date)
-                except Exception as exc:  # noqa: BLE001 — without splits, no history (it could be off by a split)
-                    logger.info("fact sheet: splits for %s unavailable: %s", ticker, exc)
-            if splits is not None or offline:
-                sheet.facts.extend(_valuation_history(st, values, frame, current, last_bar, splits))
+            history_inputs = (st, values)
             sheet.identity = _identity(st)
             if describe is not None and not offline:
                 _describe_business(sheet, st, trade_date, describe)
@@ -936,6 +1036,23 @@ def build(ticker: str, trade_date: str, run_started_at: str | None = None, asset
         sheet.unavailable.append(
             "SEC statements unavailable: " + ("annual-only 20-F/IFRS filer, " if foreign else "")
             + "no quarterly statements on file; no fundamentals figures")
+    if st is not None and history_inputs is not None and sheet.quarters:
+        # Its own try: a failure here must not drop the statements above.
+        try:
+            current = {"ev_sales": sheet.value("ev_sales.ttm"), "ev_ebit": sheet.value("ev_ebit.ttm"),
+                       "pe": sheet.value("pe.ttm")}
+            if history_frame is None and not offline:
+                from tradingagents.dataflows.vendors.yahoo.history import split_history
+
+                history_frame, history_splits = split_history(ticker, trade_date)
+            if history_frame is not None:
+                sheet.facts.extend(_valuation_history(st, history_inputs[1], history_frame, current, last_bar,
+                                                      history_splits))
+        except Exception as exc:  # noqa: BLE001
+            reraise_if_budget(exc)
+            logger.info("fact sheet: valuation history for %s skipped: %s", ticker, exc)
+            sheet.unavailable.append("valuation history unavailable (split-adjusted prices could not be read); "
+                                     "argue the multiple from growth and margins")
     if not offline and asset_type != "crypto":
         try:
             sheet.facts.extend(_macro_facts(trade_date))
@@ -1010,6 +1127,12 @@ _BALANCE_ROWS = [
     ("goodwill", "Goodwill"), ("intangibles", "Intangibles"), ("goodwill_intangibles", "Goodwill + intangibles"),
     ("liabilities", "Total liabilities"), ("equity", "Stockholders' equity"),
     ("tangible_equity", "Tangible equity (equity − goodwill − intangibles)"),
+    ("afs_debt", "Debt securities available for sale"),
+    ("sti_equity", "Short-term investments that are not debt securities (marketable equity)"),
+    ("cash_debt_securities", "Cash + debt securities (the cash-like part)"),
+    ("equity_securities_fv", "Equity securities at fair value"),
+    ("equity_nonmarketable", "Equity stakes without a market price"),
+    ("lt_investments", "Long-term investments"),
     ("warrants_outstanding", "Warrants or rights outstanding (count)"),
 ]
 
@@ -1079,8 +1202,8 @@ def render(sheet: FactSheet) -> str:
                 out.append(f"- {label}: " + "; ".join(f"[F:{concept}.{y}] {_fmt(f)}" for y, f in vals if f))
 
     derived = [f for f in sheet.facts if f.key.startswith(("ttm_", "market_cap", "ev", "runway_", "shares.cover",
-                                                           "pe.", "fcf_yield"))
-               and not f.key.startswith("ev_sales_hist")]
+                                                           "pe.", "pe_operating.", "fcf_yield"))
+               and "_hist." not in f.key]
     if derived:
         out.append("\n### Derived (computed from the figures above)")
         out.extend(f"- [F:{f.key}] {_fmt(f)} — {f.derivation or f.concept}" + (f" ({f.period})" if f.period else "")
@@ -1089,7 +1212,8 @@ def render(sheet: FactSheet) -> str:
     hist = [f for f in sheet.facts if "_hist." in f.key]
     if hist:
         out.append("\n### Valuation history (the stock's own range; argue a target multiple against it)")
-        for metric, label in (("ev_sales", "EV / TTM sales"), ("pe", "P/E on TTM GAAP EPS")):
+        for metric, label in (("ev_sales", "EV / TTM sales"), ("ev_ebit", "EV / TTM operating income"),
+                              ("pe", "P/E on TTM GAAP EPS")):
             got = {f.key.split(".")[1]: f for f in hist if f.key.startswith(f"{metric}_hist.")}
             if "median" not in got:
                 continue
