@@ -82,3 +82,48 @@ def test_quota_check_tolerates_a_text_error_body():
     assert _is_quota_error(SimpleNamespace(body={"error": "insufficient_quota: add credit"})) is True
     assert _is_quota_error(SimpleNamespace(body={"error": "slow down"})) is False
     assert _is_quota_error(SimpleNamespace(body=None)) is False
+
+
+@pytest.mark.unit
+def test_waits_stop_at_the_per_call_budget():
+    # Sustained 429s fail the call once the waits would pass the budget,
+    # instead of eating the run's wall clock (pre-staging review, 2026-10-10).
+    import httpx
+    import openai
+    from langchain_core.messages import HumanMessage
+
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    limited = openai.RateLimitError("429", response=httpx.Response(429, request=request), body={})
+
+    def fake(self, messages, stop=None, run_manager=None, **kwargs):
+        raise limited
+
+    llm = openai_client.NormalizedChatOpenAI(model="gpt-6-luna", api_key="x")
+    clock = {"t": 0.0}
+    slept = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        clock["t"] += seconds
+
+    with patch.object(openai_client.ChatOpenAI, "_generate", fake), \
+            patch.object(openai_client, "rate_limit_wait", lambda exc: 70.0), \
+            patch.object(openai_client.time, "monotonic", lambda: clock["t"]), \
+            patch.object(openai_client.time, "sleep", sleep):
+        with pytest.raises(openai.RateLimitError):
+            llm._generate([HumanMessage(content="hi")])
+    assert slept == [70.0, 70.0]
+    # Time the SDK spent inside an attempt counts against the budget too.
+    clock["t"], slept[:] = 0.0, []
+
+    def slow(self, messages, stop=None, run_manager=None, **kwargs):
+        clock["t"] += 100.0
+        raise limited
+
+    with patch.object(openai_client.ChatOpenAI, "_generate", slow), \
+            patch.object(openai_client, "rate_limit_wait", lambda exc: 30.0), \
+            patch.object(openai_client.time, "monotonic", lambda: clock["t"]), \
+            patch.object(openai_client.time, "sleep", sleep):
+        with pytest.raises(openai.RateLimitError):
+            llm._generate([HumanMessage(content="hi")])
+    assert slept == [30.0]

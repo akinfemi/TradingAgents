@@ -85,7 +85,10 @@ LINES: list[tuple[str, str, tuple[str, ...]]] = [
     ("debt", "stock", ("LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations", "LongTermDebt",
                        "DebtInstrumentCarryingAmount")),
     # KO, HD and PEP tag their current debt with leases included.
-    ("debt_current", "stock", ("LongTermDebtCurrent", "DebtCurrent", "LongTermDebtAndCapitalLeaseObligationsCurrent")),
+    # DebtCurrent first: it is the superset (current long-term debt plus
+    # commercial paper and short-term borrowings); LongTermDebt is netted of
+    # its own current portion only, so the two add up once.
+    ("debt_current", "stock", ("DebtCurrent", "LongTermDebtCurrent", "LongTermDebtAndCapitalLeaseObligationsCurrent")),
     # Debt filed by instrument instead of as a total (REITs: Realty Income
     # tags NotesPayable, LoansPayable, CommercialPaper; eval 2026-10-09).
     # Used only when no total above is tagged, so never double counted.
@@ -330,11 +333,35 @@ def from_json(cik: str, facts: dict, submissions: dict, as_of: str,
         out.quarters[concept] = quarters
         out.years[concept] = years
 
-    # LongTermDebt includes the current portion: net it out where the current
-    # portion is tagged, so debt + debt_current counts each dollar once.
+    # LongTermDebt includes the current portion: net out the current portion
+    # of long-term debt itself, so debt + debt_current counts each dollar
+    # once. Never DebtCurrent: it can carry commercial paper and short-term
+    # borrowings that LongTermDebt never held (pre-staging review, 2026-10-10).
+    ltd_current = {}
+    for tag in ("LongTermDebtCurrent", "LongTermDebtAndCapitalLeaseObligationsCurrent"):
+        known, unit = _known(us_gaap, tag, as_of)
+        for end in set(quarter_ends) | set(year_ends):
+            if known and end not in ltd_current and (v := _stock_at(known, unit, tag, end)) is not None:
+                ltd_current[end] = v
+    # Without a current-portion tag, DebtCurrent less any commercial paper and
+    # short-term borrowings tagged beside it stands in (review, 2026-10-10:
+    # LongTermDebt + DebtCurrent alone counted the current portion twice).
+    short_term = {}
+    for tag in ("CommercialPaper", "ShortTermBorrowings"):
+        known, unit = _known(us_gaap, tag, as_of)
+        for end in set(quarter_ends) | set(year_ends):
+            if known and (v := _stock_at(known, unit, tag, end)) is not None:
+                short_term[end] = short_term.get(end, 0.0) + v.value
     for table in (out.quarters, out.years):
         for end, val in (table.get("debt") or {}).items():
-            current = (table.get("debt_current") or {}).get(end)
+            current = ltd_current.get(end)
+            dc = (table.get("debt_current") or {}).get(end)
+            if current is None and dc is not None and dc.tag == "DebtCurrent":
+                portion = dc.value - short_term.get(end, 0.0)
+                if portion > 0:
+                    current = Value(value=portion, unit=dc.unit, filed=dc.filed, accn=dc.accn,
+                                    tag="DebtCurrent less commercial paper and short-term borrowings"
+                                    if end in short_term else "DebtCurrent")
             if val.tag in ("LongTermDebt", "DebtInstrumentCarryingAmount") and current is not None \
                     and 0 < current.value < val.value:
                 val.value -= current.value

@@ -21,6 +21,9 @@ from .validators import validate_model
 # the call waits for the window the provider names, then tries again.
 RATE_LIMIT_ATTEMPTS = 6
 RATE_LIMIT_MAX_WAIT = 70.0
+# The waits one call may add up, so sustained 429s fail the call clearly
+# instead of eating the run's wall clock (pre-staging review, 2026-10-10).
+RATE_LIMIT_TOTAL_WAIT = 150.0
 
 
 def rate_limit_wait(exc: Exception, now: float | None = None) -> float:
@@ -83,6 +86,7 @@ class NormalizedChatOpenAI(ChatOpenAI):
         # Every call path (plain, tool-bound, structured) comes through here.
         import openai
 
+        started = time.monotonic()
         for attempt in range(RATE_LIMIT_ATTEMPTS):
             try:
                 return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
@@ -90,7 +94,11 @@ class NormalizedChatOpenAI(ChatOpenAI):
                 # An exhausted quota is a 429 too, and waiting won't refill it.
                 if attempt == RATE_LIMIT_ATTEMPTS - 1 or _is_quota_error(exc):
                     raise
-                time.sleep(rate_limit_wait(exc))
+                wait = rate_limit_wait(exc)
+                # Wall clock, so the SDK's own retries inside each attempt count too.
+                if time.monotonic() - started + wait > RATE_LIMIT_TOTAL_WAIT:
+                    raise
+                time.sleep(wait)
 
     def with_structured_output(self, schema, *, method=None, **kwargs):
         caps = get_capabilities(self.model_name)

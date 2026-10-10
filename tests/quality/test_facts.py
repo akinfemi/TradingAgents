@@ -657,3 +657,96 @@ def test_quantile_interpolates_between_points():
     vals = [1.0, 2.0, 3.0, 4.0, 5.0]
     assert facts._quantile(vals, 0.25) == 2.0 and facts._quantile(vals, 0.75) == 4.0
     assert facts._quantile([1.0, 2.0], 0.25) == pytest.approx(1.25)
+
+
+@pytest.mark.unit
+def test_a_split_after_the_latest_filing_scales_todays_counts():
+    # Pre-staging review 2026-10-10: a 10:1 split after the latest 10-Q left
+    # market cap and P/E off tenfold (NVDA as of 2024-06-20 read 7.6x).
+    from datetime import date as _d, timedelta as _td
+
+    st, values, frame, ends = _synthetic()
+    cols = [facts._q_label(e, ends, st.fy_end) for e in ends[-5:]]
+    split_day = (_d.fromisoformat(ends[-1]) + _td(days=35)).isoformat()   # after the 10-Q filed at +30
+    plain = {f.key: f.value for f in facts._derived(st, cols, values, 100.0, ends[-1])[0]}
+    split = {f.key: f for f in facts._derived(st, cols, values, 100.0, ends[-1], splits=[(split_day, 10.0)])[0]}
+    assert split["market_cap"].value == pytest.approx(plain["market_cap"] * 10)
+    assert split["pe.ttm"].value == pytest.approx(plain["pe.ttm"] * 10)
+    assert "splits since it was filed" in split["market_cap"].derivation
+    # A split before the counts were filed is already in them.
+    early = {f.key: f.value for f in facts._derived(st, cols, values, 100.0, ends[-1],
+                                                    splits=[("2020-01-01", 10.0)])[0]}
+    assert early["market_cap"] == pytest.approx(plain["market_cap"])
+
+
+@pytest.mark.unit
+def test_split_factor_counts_only_later_splits():
+    assert facts._split_factor("2024-05-29", [("2021-07-20", 4.0), ("2024-06-10", 10.0)]) == 10.0
+    assert facts._split_factor("2024-07-01", [("2024-06-10", 10.0)]) == 1.0
+    assert facts._split_factor(None, None) == 1.0
+
+
+@pytest.mark.unit
+def test_long_term_debt_is_netted_by_its_own_current_portion_only():
+    # Pre-staging review 2026-10-10: DebtCurrent can carry commercial paper;
+    # netting LongTermDebt by it dropped $20B of real debt.
+    def stock(val):
+        return {"units": {"USD": [{"end": e, "val": val, "filed": "2026-05-01", "form": "10-Q", "accn": f"q{i}"}
+                                  for i, (_s, e) in enumerate(QUARTERS)]}}
+
+    cf = _companyfacts(100e9, 50e9)
+    cf["facts"]["us-gaap"].update({"LongTermDebt": stock(100e9), "DebtCurrent": stock(30e9)})
+    st = edgar_ext.from_json("0000000002", cf, {"name": "Test Co"}, "2026-10-08")
+    end = st.quarter_ends[-1]
+    debt, current = st.quarters["debt"][end].value, st.quarters["debt_current"][end].value
+    assert (debt, current) == (70e9, 30e9)            # no portion tag, no CP: DebtCurrent stands in (as before)
+    cf["facts"]["us-gaap"]["CommercialPaper"] = stock(20e9)
+    st = edgar_ext.from_json("0000000002", cf, {"name": "Test Co"}, "2026-10-08")
+    assert (st.quarters["debt"][end].value, st.quarters["debt_current"][end].value) == (90e9, 30e9)  # 120B in all
+    del cf["facts"]["us-gaap"]["CommercialPaper"]
+    cf["facts"]["us-gaap"]["LongTermDebtCurrent"] = stock(10e9)
+    st = edgar_ext.from_json("0000000002", cf, {"name": "Test Co"}, "2026-10-08")
+    assert st.quarters["debt"][end].value == 90e9     # 100B total less its own 10B current portion
+    assert st.quarters["debt_current"][end].value == 30e9   # DebtCurrent, with the 20B of commercial paper
+
+
+
+@pytest.mark.unit
+def test_split_scaling_reads_the_filed_date_of_the_count_it_uses():
+    # Fix-up review: with no count for the newest quarter, every split in
+    # history was applied (a 10x market cap from a split the counts include).
+    st, values, frame, ends = _synthetic()
+    cols = [facts._q_label(e, ends, st.fy_end) for e in ends[-5:]]
+    del values["shares_weighted"][ends[-1]]
+    plain = {f.key: f.value for f in facts._derived(st, cols, values, 100.0, ends[-1])[0]}
+    old = {f.key: f.value for f in facts._derived(st, cols, values, 100.0, ends[-1], splits=[("2020-01-01", 10.0)])[0]}
+    assert old["market_cap"] == pytest.approx(plain["market_cap"])
+
+
+@pytest.mark.unit
+def test_run_rate_pe_is_on_the_split_basis_too():
+    from datetime import date as _d, timedelta as _td
+
+    st, values, frame, ends = _synthetic()
+    st.quarters["eps_diluted"] = {e: edgar_ext.Value(value=values["eps_diluted"][e], unit="usd/shares",
+                                                     filed=(_d.fromisoformat(e) + _td(days=30)).isoformat(),
+                                                     accn="x", tag="EarningsPerShareDiluted") for e in ends}
+    cols = [facts._q_label(e, ends, st.fy_end) for e in ends[-5:]]
+    day = (_d.fromisoformat(ends[-1]) + _td(days=35)).isoformat()
+    plain = {f.key: f.value for f in facts._derived(st, cols, values, 100.0, ends[-1])[0]}
+    split = {f.key: f.value for f in facts._derived(st, cols, values, 100.0, ends[-1], splits=[(day, 10.0)])[0]}
+    assert split["pe.run_rate"] == pytest.approx(plain["pe.run_rate"] * 10)
+
+
+@pytest.mark.unit
+def test_a_spin_off_listed_as_a_split_is_not_applied():
+    assert facts._split_factor("2024-01-01", [("2024-04-02", 1.253)]) == 1.0      # GE / GE Vernova
+    assert facts._split_factor("2024-01-01", [("2024-04-02", 0.05)]) == pytest.approx(0.05)   # 1-for-20
+
+
+
+@pytest.mark.unit
+def test_declared_split_ratios_count_and_spin_offs_do_not():
+    assert facts._split_factor("2024-01-01", [("2024-06-01", 1.5)]) == 1.5        # 3-for-2
+    assert facts._split_factor("2024-01-01", [("2024-06-01", 1.25)]) == 1.25      # 5-for-4
+    assert facts._split_factor("2024-01-01", [("2024-04-02", 1.253)]) == 1.0      # GE / GE Vernova spin-off

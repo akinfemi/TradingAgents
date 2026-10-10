@@ -19,6 +19,7 @@ import math
 import re
 from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
+from fractions import Fraction
 from statistics import median
 from typing import Literal
 
@@ -311,8 +312,29 @@ def _share_basis(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict,
     return None, None, None, (f"share count unavailable: {problem}; no market cap or EV" if problem else None)
 
 
+def _split_factor(filed: str | None, splits: list[tuple[str, float]] | None) -> float:
+    """What a share count filed on ``filed`` is multiplied by to sit on the
+    closes' split basis (today's): every split after it was filed. A 10:1
+    split after the latest 10-Q otherwise leaves market cap, P/E and EPS off
+    tenfold (pre-staging review, 2026-10-10: NVDA as of 2024-06-20 read 7.6x)."""
+    if not filed:
+        return 1.0
+    factor = 1.0
+    for day, ratio in splits or []:
+        # Yahoo lists spin-offs as odd "splits" (GE/GEV: 1.253). A spin-off
+        # leaves the share count alone and today's close isn't adjusted for
+        # it, so only ratios a board declares (10:1, 3:2, 5:4, 1:20) count.
+        # (The history keeps every ratio: Yahoo adjusts past prices for both.)
+        if filed < day and ratio > 0:
+            clean = Fraction(ratio).limit_denominator(20)
+            if clean.numerator <= 100 and abs(float(clean) - ratio) <= 0.001 * ratio:
+                factor *= ratio
+    return factor
+
+
 def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, close: float | None,
-             price_date: str | None, unavailable: list[str] | None = None) -> tuple[list[Fact], list[str]]:
+             price_date: str | None, unavailable: list[str] | None = None,
+             splits: list[tuple[str, float]] | None = None) -> tuple[list[Fact], list[str]]:
     facts: list[Fact] = []
     flags: list[str] = []
     unavailable = unavailable if unavailable is not None else []
@@ -405,10 +427,25 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
             f"cash + short-term investments at {end} ÷ that quarter's cash burn (−FCF)", f"{cal}")
 
     shares, shares_label, shares_key, shares_note = _share_basis(st, cols, values, st.as_of or price_date)
+    split_note = ""
+    if shares:
+        if shares_key == "shares.cover" and st.cover_shares is not None:
+            # The cover count is as of its own date and never restated.
+            share_filed = st.cover_shares_date
+        else:
+            used = next((c for c in cols if shares_key == f"shares_weighted.{c.calendar}"), None)
+            share_filed = getattr(st.quarters.get("shares_weighted", {}).get(used.end if used else ""),
+                                  "filed", None)
+        factor = _split_factor(share_filed, splits)
+        if factor != 1.0:
+            shares *= factor
+            split_note = f", × {factor:g} for the splits since it was filed"
+            shares_label += split_note
     if st.cover_shares is not None and shares_key == "shares.cover":
         facts.append(Fact(key="shares.cover", value=shares, unit="shares", period=st.cover_shares_date,
                           concept="dei:EntityCommonStockSharesOutstanding", source="sec_xbrl",
-                          filed=f"{st.cover_shares.filed} {st.cover_shares.accn}"))
+                          filed=f"{st.cover_shares.filed} {st.cover_shares.accn}",
+                          derivation=f"cover-page count{split_note}" if split_note else None))
     if shares_note:
         # A stale or inconsistent cover count is left off the sheet: an agent
         # citing [F:shares.cover] would be dividing by another decade's count.
@@ -476,7 +513,8 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
     for concept, at in (("shares_diluted", end), ("shares_diluted", prev_q), ("shares_weighted", end),
                         ("shares_weighted", prev_q)):
         if at and v(concept, at):
-            dil_shares = v(concept, at)
+            dil_shares = v(concept, at) * _split_factor(
+                getattr(st.quarters.get(concept, {}).get(at), "filed", None), splits)
             dil_key = f"{concept}.{_q_label(at, ends, st.fy_end).calendar}"
             break
     if ttm_ni is not None and dil_shares:
@@ -489,6 +527,10 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
                 "amortization, non-operating gains and one-off items", price_date)
     eps_q = v("eps_diluted", end)
     eps_basis = f"{cal} diluted EPS [eps_diluted.{cal}]"
+    eps_factor = _split_factor(getattr(st.quarters.get("eps_diluted", {}).get(end), "filed", None), splits)
+    if eps_q is not None and eps_factor != 1.0:
+        eps_q /= eps_factor
+        eps_basis += f" ÷ {eps_factor:g} for the splits since it was filed"
     if eps_q is None and v("net_income", end) is not None and dil_shares:
         eps_q = v("net_income", end) / dil_shares
         why = "a fiscal Q4 files no quarterly EPS" if cal and end in st.year_ends else "no quarterly EPS tagged"
@@ -1178,7 +1220,17 @@ def build(ticker: str, trade_date: str, run_started_at: str | None = None, asset
             facts, cols, years, values = _statement_facts(st, n_quarters)
             sheet.facts.extend(facts)
             sheet.quarters, sheet.years = cols, years
-            derived, flags = _derived(st, cols, values, close, last_bar, sheet.unavailable)
+            if history_frame is None and not offline and close is not None:
+                # The splits since each count was filed put today's share
+                # counts on the closes' basis; the history below reuses them.
+                try:
+                    from tradingagents.dataflows.vendors.yahoo.history import split_history
+
+                    history_frame, history_splits = split_history(ticker, trade_date)
+                except Exception as exc:  # noqa: BLE001 — the history block retries and says so
+                    reraise_if_budget(exc)
+                    logger.info("fact sheet: splits for %s unavailable: %s", ticker, exc)
+            derived, flags = _derived(st, cols, values, close, last_bar, sheet.unavailable, history_splits)
             sheet.facts.extend(derived)
             sheet.flags.extend(flags)
             history_inputs = (st, values)
