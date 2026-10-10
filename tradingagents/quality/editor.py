@@ -115,6 +115,12 @@ def fact(facts: Facts, key: str) -> str:
     return json.dumps({k: f.get(k) for k in ("key", "value", "unit", "period", "derivation", "source")})
 
 
+# What a finding is about, in the reader's terms (the report page's "What
+# failed" tags). "call" is the rating or the thesis itself.
+READER_TAGS = ("price_target", "valuation", "call", "arithmetic", "figures", "dates", "sources", "wording",
+               "other")
+SHORT_MAX = 90
+
 TOOLS = [
     {"name": "calc", "description": "Evaluate an arithmetic expression (numbers, + - * / ** and parentheses).",
      "input_schema": {"type": "object", "properties": {"expression": {"type": "string"}},
@@ -132,7 +138,12 @@ TOOLS = [
                      "stage": {"type": "string"}, "field": {"type": "string"}, "quote": {"type": "string"}},
                      "required": ["stage", "quote"]},
                  "problem": {"type": "string"},
-                 "correction": {"type": "string"}},
+                 "correction": {"type": "string"},
+                 # Reader fields (optional: older reviews parse without them).
+                 "tag": {"type": "string", "enum": list(READER_TAGS),
+                         "description": "what the problem is about, for the reader"},
+                 "short": {"type": "string", "description": "one line for a reader, at most 90 characters"},
+                 "plain": {"type": "string", "description": "one sentence explaining it to a reader"}},
                  "required": ["severity", "location", "problem"]}},
              "digest_patch": {"type": "array", "items": {"type": "object", "properties": {
                  "field": {"type": "string", "description": "digest field, e.g. headline, bull_thesis, bear_points[1].detail"},
@@ -169,6 +180,7 @@ Then submit the review with `submit_review`:
 - digest_patch: field-level replacements or deletions that fix load-bearing digest text. Replace only with text whose every figure you checked; delete when the claim cannot be fixed. Never touch the rating. Replacements are reader text: no review vocabulary ("verified", "errata", "fact sheet", "lint", fact-key citations); state the substance.
 - decision_flags: at most three, and only for problems that change the rating, the price target, the stop or the exit and that you may not fix yourself, e.g. "rating not supported by the evidence", "price target not derived", "stop sits inside the entry zone". Not for wording, completeness of optional fields, or anything the reader-facing digest already gets right. `time_horizon` is a legacy field that is always empty by design (the 3-month rating horizon is fixed); never flag it.
 - Severity: load_bearing only for problems in the ruling, the portfolio manager's decision or the digest (what a reader sees and acts on). A problem in an analyst report or a debate turn that the ruling and decision do not rely on is minor.
+- Reader fields, for every load_bearing finding: tag (price_target, valuation, call, arithmetic, figures, dates, sources, wording or other: what it is about), short (one line of at most 90 characters a reader understands, e.g. "Its own math gives $6.30, not $6.35."), plain (one sentence that explains it to someone who hasn't read the transcript, e.g. "Working the report's figures through lands short of the target."). Reader language only: no fact keys, no stage or field names, no lint or review vocabulary ("lint", "errata", "fact sheet", "load-bearing", "flag").
 - editor_note: at most three short lines for the reader about what the review changed, empty if nothing.
 - hold_reason: one line explaining why the report should not be published if it could not be fixed, else empty.
 - lint_dismissed: every lint finding (by id, e.g. L3) you checked with the tools and found not to be an error, with the reason (the derivation that reproduces the figure, or why the text is not a claim). A dismissed finding no longer counts against publication; a lint finding you neither dismiss nor fix does.
@@ -393,6 +405,85 @@ def dismissed_key(flag: dict) -> tuple:
     return (flag.get("kind"), flag.get("stage"), flag.get("field"), flag.get("quote"))
 
 
+# ---- reader fields -----------------------------------------------------------------------
+
+# First match wins: the specific kinds (arithmetic, levels) before the broad
+# ones (figures). The server keeps the same order for reviews written before
+# the reader fields.
+_TAG_WORDS = [
+    ("arithmetic", r"arithmetic|\bmath\b|calculat|adds? up|doesn.t reach|\bgives \$|\bsums?\b|computes?"),
+    ("price_target", r"price target|\btarget\b|\bstop\b|\bexit\b|entry zone|\bentry\b|upside|downside"),
+    ("valuation", r"multiple|valuation|\bev\b|ev/|p/e|enterprise value|\bdcf\b"),
+    ("call", r"\brating\b|thesis|evidence|direction of the call|\bcall\b|\bbull\b|\bbear\b"),
+    ("dates", r"\bdates?\b|calendar|already reported|upcoming|catalyst|earnings on|\bpast\b"),
+    ("sources", r"source|citation|\bcites?\b|not in the filings|unsupported|short interest|consensus"),
+    ("wording", r"wording|language|phrase|vocabulary|jargon"),
+    ("figures", r"figure|revenue|margin|\bcash\b|\$\d|\d%|million|billion|\bnumber|misstat|share count|"
+                r"\bloss\b|income|liabilit|debt"),
+]
+
+
+def infer_tag(text: str) -> str:
+    """A reader tag from a finding's or a flag's own words; "other" when
+    nothing matches."""
+    low = str(text or "").lower()
+    for tag, pattern in _TAG_WORDS:
+        if re.search(pattern, low):
+            return tag
+    return "other"
+
+
+def _strip_keys(text) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"\s*\[F:[^\]]*(\]|$)", "", str(text or ""))).strip()
+
+
+def clamp_short(text: str, limit: int = SHORT_MAX) -> str:
+    """One reader line, at most ``limit`` characters, cut at a word boundary."""
+    text = _strip_keys(text)
+    if len(text) <= limit:
+        return text
+    head = text[: limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:—-")
+    return head + "…"
+
+
+def reader_fields(finding: dict) -> dict:
+    """The finding with its reader fields cleaned: a tag from READER_TAGS
+    (inferred from the problem when missing or unknown), short and plain as
+    reader text without keys. short and plain stay absent when the editor
+    didn't write them; the server derives them from the problem."""
+    out = dict(finding)
+    tag = str(out.get("tag") or "").strip().lower().replace(" ", "_")
+    out["tag"] = tag if tag in READER_TAGS else infer_tag(f"{out.get('kind') or ''} {out.get('problem') or ''}")
+    for key in ("short", "plain"):
+        text = _strip_keys(out.get(key)) if isinstance(out.get(key), str) else ""
+        if text:
+            out[key] = clamp_short(text) if key == "short" else text
+        else:
+            out.pop(key, None)
+    return out
+
+
+# Known decision flags in a reader's words; any other flag reads as itself.
+_FLAG_PLAIN = [
+    (r"target.*not derived|target.*asserted", "The report states a target but never shows how it gets there."),
+    (r"target.*(direction|other way|contradict)", "The target points the other way from the rating."),
+    (r"rating.*not supported|evidence", "The rating isn't supported by the evidence in the report."),
+    (r"stop", "The stop isn't placed sensibly against the entry and the stock's usual daily range."),
+    (r"exit", "The exit conditions don't follow from the report's own figures."),
+]
+
+
+def flag_issue(flag: str) -> dict:
+    """A decision flag as a reader issue: {flag, tag, short, plain}."""
+    text = _strip_keys(flag)
+    short = clamp_short(text[:1].upper() + text[1:]) if text else ""
+    if short and not short.endswith((".", "…", "?", "!")):
+        short += "."
+    plain = next((p for pattern, p in _FLAG_PLAIN if re.search(pattern, text.lower())),
+                 "The review found a problem with the call that it couldn't fix itself.")
+    return {"flag": str(flag), "tag": infer_tag(text), "short": short, "plain": plain}
+
+
 def review(llm, state: dict, lint_report: dict, earlier_errata: str = "", callbacks=None,
            budget_seconds: float = RETRY_BUDGET_SECONDS, sleep=time.sleep, on_step=None) -> dict:
     """The editor's review, with retries and backoff for up to ``budget_seconds``.
@@ -413,6 +504,10 @@ def review(llm, state: dict, lint_report: dict, earlier_errata: str = "", callba
             if not all(isinstance(f, dict) for f in out["findings"] + out["digest_patch"]):
                 raise ValueError("the editor's review does not match the schema")
             out["decision_flags"] = [str(f) for f in out["decision_flags"]]
+            # Reader fields: tags checked, keys stripped; each decision flag
+            # as a reader issue for the report page's "What failed".
+            out["findings"] = [reader_fields(f) for f in out["findings"]]
+            out["flag_issues"] = [flag_issue(f) for f in out["decision_flags"]]
             out["editor_note"] = (out.get("editor_note") or "").strip()
             out["hold_reason"] = (out.get("hold_reason") or "").strip()
             out["lint_dismissed"] = _resolve_dismissals(out.get("lint_dismissed"), prompt_flags(lint_report))
