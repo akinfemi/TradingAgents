@@ -16,7 +16,7 @@ from tradingagents.agents.context import (
     get_portfolio_context_from_state,
     rating_horizon,
 )
-from tradingagents.agents.rating import parse_rating
+from tradingagents.agents.rating import band_text, parse_rating
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
 from tradingagents.agents.structured import NO_EXTERNAL_TOOLS, bind_structured, invoke_structured
 from tradingagents.dataflows.config import get_config
@@ -58,12 +58,15 @@ def create_portfolio_manager(llm):
 
 {"**This is a revision.** The review errata at the top list what failed review. Fix every item that concerns the decision (the rating, target, stop, exit or sizing): restate each corrected value explicitly, and do not repeat a figure the errata mark wrong." if state.get("review_errata") else ""}
 
-**Rating Scale** (use exactly one):
-- **Buy**: Strong conviction to enter or add to position
-- **Overweight**: Favorable outlook, gradually increase exposure
-- **Hold**: Maintain current position, no action needed
-- **Underweight**: Reduce exposure, take partial profits
-- **Sell**: Exit position or avoid entry
+**Rating Scale** (use exactly one). Ratings are expected performance against {benchmark} over the horizon, as the report's disclosure defines them; the price target's move from the last close must sit in the rating's band:
+- **Buy**: significantly outperform; target move {band_text("Buy")}
+- **Overweight**: modestly outperform; target move {band_text("Overweight")}
+- **Hold**: perform broadly in line; target move {band_text("Hold")}
+- **Underweight**: modestly underperform; target move {band_text("Underweight")}
+- **Sell**: significantly underperform; target move {band_text("Sell")}
+If the target lands outside the rating's band, change one of them so they agree; never leave a modest rating on a large move or the reverse.
+
+**Voice:** this is a published research note, not advice to one person. Write in the third person about the stock and the call ("the plan trims exposure in stages"), never "I", "we", "you" or "the investor", and never refer to the investor's own target, holdings or loss budget. Say when in market terms ("over the next five sessions", "before the November 4 report"), never relative to today ("after the weekend", "tomorrow", "Monday"). When your valuation multiple uses a different basis from one the debate cites (annualized latest quarter against TTM, say), name both and say why you chose yours. In "what would change it", give at least one fundamental threshold with its current value from the fact sheet (segment growth, gross or operating margin, free cash flow, guidance), not only price levels.
 
 **Context:**
 - Research Manager's investment plan: **{research_plan}**

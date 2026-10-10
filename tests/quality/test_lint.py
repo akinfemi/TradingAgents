@@ -85,7 +85,56 @@ def test_short_interest_is_not_used(sheet):
 def test_target_on_the_wrong_side_of_the_price(sheet):
     flags = check_target({"rating": "Underweight", "price_target": 9.5}, sheet)
     assert [f.kind for f in flags] == ["target_direction"]
-    assert check_target({"rating": "Underweight", "price_target": 5.5}, sheet) == []
+    close = sheet.value("price.close")
+    assert check_target({"rating": "Underweight", "price_target": round(close * 0.92, 2)}, sheet) == []
+
+
+@pytest.mark.unit
+def test_target_outside_the_rating_band(sheet):
+    # AMD, 2026-10-10: -15.3% rated Underweight ("modestly underperform").
+    close = sheet.value("price.close")
+    flags = check_target({"rating": "Underweight", "price_target": round(close * 0.847, 2)}, sheet)
+    assert [f.kind for f in flags] == ["target_tier"] and "Sell" in flags[0].expected
+    assert check_target({"rating": "Sell", "price_target": round(close * 0.847, 2)}, sheet) == []
+    assert [f.kind for f in check_target({"rating": "Buy", "price_target": round(close * 1.05, 2)}, sheet)] \
+        == ["target_tier"]
+    # A point of slack at the band's edge.
+    assert check_target({"rating": "Hold", "price_target": round(close * 1.045, 2)}, sheet) == []
+
+
+@pytest.mark.unit
+def test_reader_voice_in_the_digest(sheet):
+    def voice(text, field="digest.risk_aggressive"):
+        return [f for f in lint_text(text, sheet, "digest", field) if f.kind == "voice"]
+    assert voice("I'd reconsider the trim stance if the stock stabilizes.")
+    assert voice("This lens adds a post-event range test.")
+    assert voice("The plan trims exposure above the investor's modest target.")
+    assert voice("Stage trims after the weekend using limit orders.")
+    assert voice("Favors waiting for the report.") == []
+    assert voice("The Phase I trial reads out in the US next quarter.") == []
+    assert voice("I'd add.", field="market_report") == []      # analyst text is not reader text
+    assert all(f.severity == "minor" for f in voice("We would trim.", field="pm"))
+
+
+@pytest.mark.unit
+def test_rating_words_and_margin_wording(sheet):
+    state = {"fact_sheet": None, "portfolio_decision": {"rating": "Underweight"},
+             "report_digest": {"headline": "Underweight: demanding expectations",
+                               "ruling": "The bear case won narrowly on valuation.", "conviction": 62,
+                               "risk_neutral": {"stance": "Favors restraint.",
+                                                "summary": "Would revisit the SELL/trim stance. Turns Overweight on a beat."},
+                               "exit_triggers": [{"title": "Momentum", "detail": "A reclaim of the 10-day EMA pauses trims."}]}}
+    flags = lint_state(state)["flags"]
+    got = {(f["kind"], f["field"]) for f in flags}
+    assert ("rating_word", "digest.risk_neutral") in got
+    assert sum(1 for f in flags if f["kind"] == "rating_word") == 2   # SELL and Overweight
+    assert ("margin_wording", "digest.ruling") in got
+    assert ("trigger_mix", "digest.exit_triggers") in got
+    assert not any(f["kind"] == "rating_word" and f["field"] == "digest.headline" for f in flags)
+    state["report_digest"].update(conviction=38, exit_triggers=[
+        {"title": "Data Center slows", "detail": "Data Center growth below 60%; currently 107%."}])
+    got = {f["kind"] for f in lint_state(state)["flags"]}
+    assert "margin_wording" not in got and "trigger_mix" not in got
 
 
 @pytest.mark.unit
@@ -137,7 +186,7 @@ def test_full_pass_reports_counts(sheet):
 
 @pytest.mark.unit
 def test_the_target_is_derived_and_inside_its_cases(sheet):
-    ok = {"rating": "Underweight", "price_target": 6.08, "bear_case_value": 4.1, "bull_case_value": 8.0,
+    ok = {"rating": "Sell", "price_target": 6.08, "bear_case_value": 4.1, "bull_case_value": 8.0,
           "target_math": "12x × $174.1M = $2.09B EV; + $1.38B cash = $3.47B; ÷ 570.6M shares = $6.08"}
     assert check_target(ok, sheet) == []
     off = {**ok, "target_math": "… ÷ 570.6M shares = $5.10"}
@@ -420,7 +469,7 @@ def test_7_only_disclosure_phrases_label_a_figure_unverified(sheet):
 
 @pytest.mark.unit
 def test_8_target_math_without_a_dollar_result_is_read(sheet):
-    base = {"rating": "Underweight", "price_target": 6.08}
+    base = {"rating": "Sell", "price_target": 6.08}
     for math in ("$2.09B EV + $1.38B cash = $3.47B equity; / 570.6M shares = 6.08 per share",
                  "12x × $174.1M = $2.09B; + $1.38B = $3.47B; ÷ 570.6M ≈ $6.08",
                  "Equity value $3.47B / 570.6M shares → $6.08",
@@ -560,7 +609,7 @@ def test_r2_4_a_negative_percentage_is_not_excused_by_its_own_digits(sheet):
 
 @pytest.mark.unit
 def test_r2_5_a_per_share_input_is_not_the_result(sheet):
-    decision = {"rating": "Underweight", "price_target": 6.08,
+    decision = {"rating": "Sell", "price_target": 6.08,
                 "target_math": "Book value of $6.08 per share × 1.5x P/B = $9.12 per share"}
     assert [f.kind for f in check_target(decision, sheet)] == ["target_math"]
 

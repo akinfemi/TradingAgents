@@ -138,8 +138,21 @@ def build_digest_prompt(final_state: dict, computed_context: str | None = None) 
         # R7: each field has one job, and nothing repeats.
         "- Field roles: the ruling says which side won and why; sizing, "
         "entry style and levels say how to act; the risk lenses say what each "
-        "lens would do differently, quoting its own recommendation sentence. "
-        "Never repeat a fact already stated in a field above.",
+        "lens would do differently, in the third person. Never repeat a fact "
+        "already stated in a field above, and never give two lenses the same "
+        "point.",
+        # AMD, 2026-10-10 review: lenses quoted agents in the first person
+        # with the trader's SELL, which the report never rated; the plan
+        # spoke to "the investor" and said "after the weekend".
+        "- Reader text is a published note in the third person: never 'I', "
+        "'we', 'you', 'the investor' or the investor's own target or loss "
+        "budget, and never the trader's BUY/HOLD/SELL; the only rating word "
+        "is the final rating. Time is stated in market terms ('over the next "
+        "five sessions', 'before the November 4 report'), never relative to "
+        "today ('after the weekend', 'tomorrow', 'Monday').",
+        "- When the source cites the same multiple on two bases (EV/sales on "
+        "TTM revenue and on annualized latest-quarter revenue), label each "
+        "with its basis every time it appears.",
         "",
     ]
     if computed_context:

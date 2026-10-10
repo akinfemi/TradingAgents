@@ -16,7 +16,11 @@ Checks (numbered as in the plan):
 7. sanitiser and data policy: emoji, sign-offs, truncated fields, and
    data the platform may not use (short interest, consensus, targets),
    and review vocabulary ("verified", "errata", "fact sheet") in the
-   reader-facing digest.
+   reader-facing digest;
+8. reader voice: first person, "the investor", time relative to today,
+   the trader's BUY/SELL or another tier's name in reader text, ruling
+   words that disagree with the debate margin, and exit triggers with no
+   fundamental threshold.
 
 Severity: ``load_bearing`` when the location is load-bearing (the
 headline, the PM's summary or thesis, the RM ruling, the digest's bull
@@ -35,11 +39,13 @@ from dataclasses import asdict, dataclass, field, replace
 from difflib import SequenceMatcher
 from functools import lru_cache
 
+from tradingagents.agents.rating import RATING_BANDS, band_text, tier_for_move
+
 # ---- the flag ----------------------------------------------------------------------
 
 BLOCKING_KINDS = {"cited_mismatch", "unknown_key", "direction", "misattributed", "arithmetic",
                   "period_mismatch", "concept_mismatch", "data_policy", "target_direction", "target_math",
-                  "target_range", "social_claim", "process_language"}
+                  "target_range", "target_tier", "social_claim", "process_language"}
 
 LOAD_BEARING_FIELDS = {
     "digest.headline", "digest.bull_thesis", "digest.bear_thesis", "digest.ruling",
@@ -1206,6 +1212,106 @@ def check_process_language(text: str, stage: str, field_name: str) -> list[LintF
     return flags
 
 
+# Check 8. AMD, 2026-10-10 review: risk lenses quoted agents in the first
+# person ("I'd reconsider the SELL/trim stance"), talked about themselves
+# ("This lens adds..."), and the plan spoke to "the investor" about "after
+# the weekend". Case-sensitive: "US" and "Series I" are not pronouns.
+_FIRST_PERSON = re.compile(r"(?<![\w'’])(?:I|I'd|I’d|I'm|I’m|I've|I’ve|I'll|I’ll|[Mm]y|me|[Ww]e|[Ww]e'd|"
+                           r"[Ww]e’d|[Ww]e're|[Ww]e’re|[Oo]ur)(?![\w'’])")
+_SECOND_PERSON = re.compile(r"\b(?:you|your|yours)\b|\bthe investor(?:'s|’s)?\b", re.I)
+_RELATIVE_TIME = re.compile(r"\bweekend\b|\btomorrow\b|\btonight\b|"
+                            r"\b(?:on|this|next)\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday)\b", re.I)
+_ROMAN_I = re.compile(r"\b(?:Phase|Series|Class|Tier|Type|Part|Stage|Level|Grade|Title|Chapter|War)\s*$", re.I)
+_LENS_META = re.compile(r"\bthis lens\b|\blens (?:adds|makes|requires|favors|favours)\b", re.I)
+
+
+def check_voice(text: str, stage: str, field_name: str) -> list[LintFlag]:
+    """Check 8: reader text is a published note in the third person. Load-
+    bearing in the digest (the editor patches it); a lead in the PM's text."""
+    if not text or not (field_name.startswith("digest") or field_name.startswith("pm")):
+        return []
+    severity = "load_bearing" if field_name.startswith("digest") else "minor"
+    flags: list[LintFlag] = []
+    seen: set[str] = set()
+    for rx, what in ((_FIRST_PERSON, "first person"), (_SECOND_PERSON, "addressed to a reader or 'the investor'"),
+                     (_RELATIVE_TIME, "time relative to today"), (_LENS_META, "talk about the lens itself")):
+        for m in rx.finditer(text):
+            sentence = _sentence_at(text, m.start(), m.end())
+            if sentence in seen or (m.group(0) == "I" and _ROMAN_I.search(text[:m.start()])):
+                continue
+            seen.add(sentence)
+            flags.append(LintFlag(severity, "voice", stage, field_name, sentence[:300],
+                                  f"{what} ('{m.group(0)}'): write in the third person about the stock, "
+                                  "with time in market terms"))
+    return flags
+
+
+_TRADER_ACTION = re.compile(r"\b(?:BUY|SELL|HOLD)\b")
+_TIER_WORD = re.compile(r"\b(?:Overweight|Underweight|OVERWEIGHT|UNDERWEIGHT)\b")
+
+
+def check_rating_words(text: str, rating: str | None, stage: str, field_name: str) -> list[LintFlag]:
+    """Check 8: the only rating word in the digest is the final rating; the
+    trader's BUY/HOLD/SELL never reaches the reader."""
+    if not text:
+        return []
+    flags: list[LintFlag] = []
+    for m in _TRADER_ACTION.finditer(text):
+        flags.append(LintFlag("load_bearing", "rating_word", stage, field_name,
+                              _sentence_at(text, m.start(), m.end())[:300],
+                              f"'{m.group(0)}' is the trader's action, not the report's rating"
+                              + (f" ({rating})" if rating else "")))
+    for m in _TIER_WORD.finditer(text):
+        if rating and m.group(0).lower() != rating.lower():
+            flags.append(LintFlag("load_bearing", "rating_word", stage, field_name,
+                                  _sentence_at(text, m.start(), m.end())[:300],
+                                  f"'{m.group(0)}' names a tier the report did not assign ({rating})"))
+    return flags
+
+
+_NARROW = re.compile(r"\b(?:narrow(?:ly)?|slight(?:ly)?|marginal(?:ly)?|barely|by a hair)\b", re.I)
+_DECISIVE = re.compile(r"\b(?:decisive(?:ly)?|overwhelming(?:ly)?|one-sided|resounding(?:ly)?|clear-cut)\b", re.I)
+
+
+def check_margin_wording(digest: dict) -> list[LintFlag]:
+    """Check 8: the ruling's words agree with the debate margin's band
+    (ReportDigest.conviction: narrow 20-45, decisive 75+). AMD, 2026-10-10:
+    "won narrowly" beside a margin of 62."""
+    margin = digest.get("conviction")
+    if not isinstance(margin, (int, float)):
+        return []
+    flags: list[LintFlag] = []
+    for key in ("headline", "ruling", "conviction_note"):
+        text = digest.get(key)
+        if not isinstance(text, str):
+            continue
+        for rx, ok, band in ((_NARROW, margin < 45, "under 45"), (_DECISIVE, margin >= 75, "75 or more")):
+            m = rx.search(text)
+            if m and not ok:
+                flags.append(LintFlag("load_bearing", "margin_wording", "digest", f"digest.{key}",
+                                      _sentence_at(text, m.start(), m.end())[:300],
+                                      f"'{m.group(0)}' needs a debate margin {band}; the margin is {margin:g}"))
+    return flags
+
+
+_FUNDAMENTAL = re.compile(r"revenue|sales|growth|margin|cash flow|\bFCF\b|guidance|\bEPS\b|earnings per|backlog|"
+                          r"bookings|orders|net income|operating income|operating loss|net loss|debt|dilution|"
+                          r"share count|burn|runway", re.I)
+
+
+def check_trigger_mix(digest: dict) -> list[LintFlag]:
+    """Check 8: at least one exit trigger is a fundamental threshold, not only
+    price levels and indicators. A lead for the editor, never a hold."""
+    triggers = digest.get("exit_triggers")
+    if not isinstance(triggers, list) or not triggers:
+        return []
+    if any(_FUNDAMENTAL.search(" ".join(_digest_strings(t))) for t in triggers):
+        return []
+    return [LintFlag("minor", "trigger_mix", "digest", "digest.exit_triggers", str(triggers)[:300],
+                     "no exit trigger is a fundamental threshold (growth, margin, cash flow, guidance) "
+                     "with its current value")]
+
+
 def _digest_strings(value) -> list[str]:
     if isinstance(value, str):
         return [value]
@@ -1234,6 +1340,17 @@ def check_target(decision: dict | None, facts: Facts) -> list[LintFlag]:
         flags.append(LintFlag("load_bearing", "target_direction", "portfolio_manager", "pm.price_target",
                               f"{rating} with a target of {target} against a close of {close}",
                               "a buy-side target above the price, a sell-side one below", ["price.close"]))
+    # The target's move sits in the rating's band (rating.RATING_BANDS), with a
+    # point of slack at the edges.
+    move = (target / close - 1) * 100 if close else 0.0
+    if rating in RATING_BANDS and not ((rating in ("Buy", "Overweight") and not up)
+                                       or (rating in ("Sell", "Underweight") and up)):
+        low, high = RATING_BANDS[rating]
+        if (low is not None and move < low - 1) or (high is not None and move > high + 1):
+            flags.append(LintFlag("load_bearing", "target_tier", "portfolio_manager", "pm.price_target",
+                                  f"{rating} with a target of {target} against a close of {close} ({move:+.1f}%)",
+                                  f"{rating} needs a target move {band_text(rating)}; {move:+.1f}% is "
+                                  f"{tier_for_move(move)}: change the rating or the target", ["price.close"]))
     # R7: the target is derived — its math ends at it, and it sits between
     # the bear and bull cases.
     math = decision.get("target_math") or ""
@@ -1282,6 +1399,7 @@ def lint_text(text: str, facts: Facts, stage: str, field_name: str,
         *check_policy(text, stage, field_name),
         *check_style(text, stage, field_name),
         *check_process_language(text, stage, field_name),
+        *check_voice(text, stage, field_name),
     ]
     if field_name in LOAD_BEARING_FIELDS:
         flags.extend(unsupported_figures(text, facts, stage, field_name))
@@ -1348,6 +1466,14 @@ def lint_state(state: dict) -> dict:
                          if f.severity != "style")
             flags.extend(unsupported_figures(text, facts, "digest", f"digest.{key}"))
     flags.extend(check_target(state.get("portfolio_decision"), facts))
+    digest = state.get("report_digest") or {}
+    rating = (state.get("portfolio_decision") or {}).get("rating") or state.get("final_rating")
+    rating = rating if isinstance(rating, str) and rating.title() in RATING_BANDS else None
+    for key, value in digest.items():
+        for item in (value if isinstance(value, list) else [value]):
+            flags.extend(check_rating_words("\n".join(_digest_strings(item)), rating, "digest", f"digest.{key}"))
+    flags.extend(check_margin_wording(digest))
+    flags.extend(check_trigger_mix(digest))
     # Two figures in one sentence are one finding, not two.
     unique: dict[tuple, LintFlag] = {}
     for f in flags:

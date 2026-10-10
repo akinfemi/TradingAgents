@@ -31,6 +31,38 @@ RATING_REVIEW = "REVIEW"
 
 _RATING_SET = {r.lower() for r in RATINGS_5_TIER}
 
+# The tiers as the disclosure defines them (performance against the benchmark
+# over the rating horizon), as bands of the price target's implied move from
+# the last close, in percent: (low, high), open-ended at the extremes. The
+# benchmark's own drift over three months sits inside the Hold band, so the
+# implied move stands in for the relative one. AMD, 2026-10-10: a -15.3%
+# target rated Underweight ("modestly underperform") read as a Sell.
+RATING_BANDS: dict[str, tuple[float | None, float | None]] = {
+    "Buy": (12.0, None),
+    "Overweight": (4.0, 12.0),
+    "Hold": (-4.0, 4.0),
+    "Underweight": (-12.0, -4.0),
+    "Sell": (None, -12.0),
+}
+
+
+def band_text(rating: str) -> str:
+    """'between -12% and -4%', 'at least +12%', 'at most -12%'."""
+    low, high = RATING_BANDS[rating]
+    if low is None:
+        return f"at most {high:+.0f}%"
+    if high is None:
+        return f"at least {low:+.0f}%"
+    return f"between {low:+.0f}% and {high:+.0f}%"
+
+
+def tier_for_move(move_pct: float) -> str:
+    """The tier whose band [low, high) holds an implied move."""
+    for rating, (low, high) in RATING_BANDS.items():
+        if (low is None or move_pct >= low) and (high is None or move_pct < high):
+            return rating
+    return "Hold"
+
 # Matches "Rating: X" / "rating - X" / "Rating — **X**" — tolerates markdown
 # bold wrappers and any dash or colon a model writes as the separator. "rating"
 # must start a word, so "Operating margin: Sell-side" is not a label.

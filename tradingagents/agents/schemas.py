@@ -533,10 +533,13 @@ class RiskLens(BaseModel):
     )
     summary: str = Field(
         description=(
-            "What this lens would do differently from the decision, as its own "
-            "recommendation sentence quoted from its turn (not paraphrased), then "
-            "at most one sentence of rationale. Do not restate the debate or the "
-            "ruling."
+            "What this lens would do differently from the decision, in one "
+            "third-person sentence about the stock ('Would reconsider the trims "
+            "if the stock holds its post-earnings range and Data Center growth "
+            "stays above 80%'), then at most one sentence of rationale. Never "
+            "quote the turn: no 'I', 'we' or 'you', no BUY/SELL from the trader's "
+            "proposal, and no talk about the lens itself ('this lens adds'). "
+            "Do not restate the debate, the ruling, or another lens."
         ),
     )
 
@@ -623,10 +626,12 @@ class ReportDigest(BaseModel):
             "bear debate favoured the final rating. 0 is evenly split, 100 "
             "one-sided. It measures the strength of the argument, NOT the "
             "probability the call is right and NOT the writers' confidence. "
-            "A decisive win on verified evidence with aligned reviews is "
-            "80+, a narrow win with real open concerns 55-75, a near-even "
-            "split 40-55. (Shown to readers as 'Debate margin'; the field "
-            "keeps its old name.)"
+            "Use the whole scale: a near-even split is 0-20, a narrow win "
+            "with real open concerns 20-45, a clear win 45-75, a decisive "
+            "win on checked evidence with aligned reviews 75+. The ruling's "
+            "wording must match the band ('narrowly' only under 45, "
+            "'decisively' only from 75). (Shown to readers as 'Debate "
+            "margin'; the field keeps its old name.)"
         ),
     )
     conviction_note: str = Field(
@@ -664,6 +669,9 @@ class ReportDigest(BaseModel):
             "The 3-4 conditions under which the decision says to exit, trim, "
             "or reverse — the watchlist this report leaves behind. Each title "
             "names the trigger, each detail says what observable change fires "
-            "it, in one sentence of at most 240 characters."
+            "it, in one sentence of at most 240 characters. At least one is a "
+            "fundamental threshold with its current value (segment growth, "
+            "gross or operating margin, free cash flow, guidance), not a "
+            "price level or indicator."
         ),
     )
