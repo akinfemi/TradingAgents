@@ -1215,29 +1215,49 @@ def check_process_language(text: str, stage: str, field_name: str) -> list[LintF
 # Check 8. AMD, 2026-10-10 review: risk lenses quoted agents in the first
 # person ("I'd reconsider the SELL/trim stance"), talked about themselves
 # ("This lens adds..."), and the plan spoke to "the investor" about "after
-# the weekend". Case-sensitive: "US" and "Series I" are not pronouns.
-_FIRST_PERSON = re.compile(r"(?<![\w'’])(?:I|I'd|I’d|I'm|I’m|I've|I’ve|I'll|I’ll|[Mm]y|me|[Ww]e|[Ww]e'd|"
-                           r"[Ww]e’d|[Ww]e're|[Ww]e’re|[Oo]ur)(?![\w'’])")
-_SECOND_PERSON = re.compile(r"\b(?:you|your|yours)\b|\bthe investor(?:'s|’s)?\b", re.I)
-_RELATIVE_TIME = re.compile(r"\bweekend\b|\btomorrow\b|\btonight\b|"
-                            r"\b(?:on|this|next)\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday)\b", re.I)
-_ROMAN_I = re.compile(r"\b(?:Phase|Series|Class|Tier|Type|Part|Stage|Level|Grade|Title|Chapter|War)\s*$", re.I)
+# the weekend". The patterns are narrow on purpose: an open load-bearing flag
+# costs a revision, so "Phase I", "the I/O die", "investor day", "on Tuesday,
+# November 4" and quoted guidance ("we expect") must not fire.
+#
+# Load-bearing only in the editorial fields the editor can patch; in the
+# excerpts (which carry news and quotes) and the risk lenses, a lead.
+EDITORIAL_FIELDS = {"digest.headline", "digest.bull_thesis", "digest.bear_thesis", "digest.ruling",
+                    "digest.conviction_note", "digest.sizing", "digest.entry_style", "digest.review_cycle",
+                    "digest.exit_triggers"}
+_QUOTED = re.compile(r"\"[^\"\n]{0,400}\"|“[^”\n]{0,400}”")
+_FIRST_PERSON = re.compile(r"(?<![\w'’/-])(?:I(?=\s+[a-z])|I(?:'|’)(?:d|m|ve|ll)\b|[Mm]y(?=\s+[a-z])|"
+                           r"[Ww]e(?:'|’)(?:d|re|ve|ll)\b|[Ww]e(?=\s+(?:would|will|think|believe|expect|see|"
+                           r"prefer|recommend|favor|favour|view|rate|remain|maintain|reconsider)\b)|"
+                           r"[Oo]ur(?=\s+(?:view|call|rating|target|thesis|stance|recommendation|position)\b))")
+_SECOND_PERSON = re.compile(r"(?<![\w'’])(?:you(?=\s+(?:should|could|would|can|may|might|will|want|need|"
+                            r"hold|own|buy|sell|trim|add)\b)|your(?=\s+(?:position|portfolio|shares|stake|"
+                            r"exposure|target|risk|holdings?|loss|account)\b))|"
+                            r"\bthe investor(?:'s|’s)?\b(?!\s+(?:day|relations|presentation|conference|call|deck)\b)"
+                            r"(?!,\s+[A-Z])", re.I)
+_RELATIVE_TIME = re.compile(r"\b(?:after|over|through|this|next)\s+(?:the\s+)?weekend\b|\btomorrow\b|\btonight\b|"
+                            r"\b(?:this|next)\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday)\b", re.I)
 _LENS_META = re.compile(r"\bthis lens\b|\blens (?:adds|makes|requires|favors|favours)\b", re.I)
 
 
+def _unquoted(text: str) -> str:
+    """The text with quoted spans blanked (same length, so offsets hold)."""
+    return _QUOTED.sub(lambda m: " " * len(m.group(0)), text or "")
+
+
 def check_voice(text: str, stage: str, field_name: str) -> list[LintFlag]:
-    """Check 8: reader text is a published note in the third person. Load-
-    bearing in the digest (the editor patches it); a lead in the PM's text."""
+    """Check 8: reader text is a published note in the third person."""
     if not text or not (field_name.startswith("digest") or field_name.startswith("pm")):
         return []
-    severity = "load_bearing" if field_name.startswith("digest") else "minor"
+    severity = "load_bearing" if field_name in EDITORIAL_FIELDS else "minor"
+    bare = _unquoted(text)
     flags: list[LintFlag] = []
     seen: set[str] = set()
     for rx, what in ((_FIRST_PERSON, "first person"), (_SECOND_PERSON, "addressed to a reader or 'the investor'"),
                      (_RELATIVE_TIME, "time relative to today"), (_LENS_META, "talk about the lens itself")):
-        for m in rx.finditer(text):
+        for m in rx.finditer(bare):
             sentence = _sentence_at(text, m.start(), m.end())
-            if sentence in seen or (m.group(0) == "I" and _ROMAN_I.search(text[:m.start()])):
+            # "Phase I trial", "Fund I raised", "Charles I": a numeral after a name.
+            if sentence in seen or (m.group(0) == "I" and re.search(r"[A-Z][\w-]*\s*$", bare[:m.start()])):
                 continue
             seen.add(sentence)
             flags.append(LintFlag(severity, "voice", stage, field_name, sentence[:300],
@@ -1246,39 +1266,54 @@ def check_voice(text: str, stage: str, field_name: str) -> list[LintFlag]:
     return flags
 
 
-_TRADER_ACTION = re.compile(r"\b(?:BUY|SELL|HOLD)\b")
-_TIER_WORD = re.compile(r"\b(?:Overweight|Underweight|OVERWEIGHT|UNDERWEIGHT)\b")
+_TRADER_ACTION = re.compile(r"(?<![\w$-])(?:BUY|SELL|HOLD)\b(?!-(?:side|rated)\b)")
+_TIER_WORD = re.compile(r"\b(?:Overweight|Underweight|OVERWEIGHT|UNDERWEIGHT)\b(?!-rated\b)")
+# A sentence reporting someone else's rating action ("Morgan Stanley cut it to
+# Underweight") is news, not the report's rating.
+_RATING_NEWS = re.compile(r"\b(?:upgrad\w*|downgrad\w*|cut|raised|moved|initiat\w*|reiterat\w*|analysts?|"
+                          r"brokers?|consensus)\b", re.I)
 
 
 def check_rating_words(text: str, rating: str | None, stage: str, field_name: str) -> list[LintFlag]:
-    """Check 8: the only rating word in the digest is the final rating; the
-    trader's BUY/HOLD/SELL never reaches the reader."""
-    if not text:
+    """Check 8: the only rating word in the editorial digest is the final
+    rating; the trader's BUY/HOLD/SELL never reaches the reader. The
+    excerpts (news, analysts) are not checked; the lenses only as a lead."""
+    if not text or field_name in {"digest.market_excerpt", "digest.sentiment_excerpt", "digest.news_excerpt",
+                                  "digest.fundamentals_excerpt"}:
         return []
+    severity = "load_bearing" if field_name in EDITORIAL_FIELDS or field_name == "digest.trader_excerpt" else "minor"
+    bare = _unquoted(text)
     flags: list[LintFlag] = []
-    for m in _TRADER_ACTION.finditer(text):
-        flags.append(LintFlag("load_bearing", "rating_word", stage, field_name,
-                              _sentence_at(text, m.start(), m.end())[:300],
-                              f"'{m.group(0)}' is the trader's action, not the report's rating"
-                              + (f" ({rating})" if rating else "")))
-    for m in _TIER_WORD.finditer(text):
-        if rating and m.group(0).lower() != rating.lower():
-            flags.append(LintFlag("load_bearing", "rating_word", stage, field_name,
-                                  _sentence_at(text, m.start(), m.end())[:300],
-                                  f"'{m.group(0)}' names a tier the report did not assign ({rating})"))
+    for rx in (_TRADER_ACTION, _TIER_WORD):
+        for m in rx.finditer(bare):
+            word = m.group(0)
+            if rating and word.lower() == rating.lower():
+                continue
+            sentence = _sentence_at(text, m.start(), m.end())
+            if _RATING_NEWS.search(sentence):
+                continue
+            expected = (f"'{word}' is the trader's action, not the report's rating" if rx is _TRADER_ACTION
+                        else f"'{word}' names a tier the report did not assign")
+            flags.append(LintFlag(severity, "rating_word", stage, field_name, sentence[:300],
+                                  expected + (f" ({rating})" if rating else "")))
     return flags
 
 
-_NARROW = re.compile(r"\b(?:narrow(?:ly)?|slight(?:ly)?|marginal(?:ly)?|barely|by a hair)\b", re.I)
-_DECISIVE = re.compile(r"\b(?:decisive(?:ly)?|overwhelming(?:ly)?|one-sided|resounding(?:ly)?|clear-cut)\b", re.I)
+# The margin word must describe the win, not a moat, a margin or a factor.
+_WIN = r"(?:won|wins|win|prevail\w*|carr(?:y|ies|ied)|edged?|edges|beat|beats|favou?r\w*|ruled?|ruling|side)"
+_NARROW = re.compile(rf"\b{_WIN}\W+(?:\w+\W+){{0,3}}?(?:narrow(?:ly)?|slight(?:ly)?|marginal(?:ly)?|barely|by a hair)\b|"
+                     rf"\b(?:narrow(?:ly)?|slight(?:ly)?|marginal(?:ly)?|barely)\W+(?:\w+\W+){{0,2}}?{_WIN}\b", re.I)
+_DECISIVE = re.compile(rf"\b{_WIN}\W+(?:\w+\W+){{0,3}}?(?:decisive(?:ly)?|overwhelming(?:ly)?|resounding(?:ly)?|"
+                       rf"comfortabl[ye])\b|\b(?:decisive(?:ly)?|overwhelming(?:ly)?|resounding(?:ly)?|one-sided)\W+"
+                       rf"(?:\w+\W+){{0,2}}?(?:{_WIN}|victory|debate)\b", re.I)
 
 
 def check_margin_wording(digest: dict) -> list[LintFlag]:
-    """Check 8: the ruling's words agree with the debate margin's band
-    (ReportDigest.conviction: narrow 20-45, decisive 75+). AMD, 2026-10-10:
-    "won narrowly" beside a margin of 62."""
+    """Check 8: the ruling's words about the win agree with the debate
+    margin's band (ReportDigest.conviction: narrow 20-45, decisive 75+).
+    AMD, 2026-10-10: "won narrowly" beside a margin of 62."""
     margin = digest.get("conviction")
-    if not isinstance(margin, (int, float)):
+    if not isinstance(margin, (int, float)) or isinstance(margin, bool):
         return []
     flags: list[LintFlag] = []
     for key in ("headline", "ruling", "conviction_note"):

@@ -603,7 +603,10 @@ class ReportDigest(BaseModel):
     )
     trader_excerpt: str | None = Field(
         default=None,
-        description="One-to-two-sentence summary of the trader's transaction plan (action, entry style, levels). None if absent.",
+        description=(
+            "One-to-two-sentence summary of the trader's transaction plan (entry style, levels) in "
+            "descriptive words (accumulate/trim/exit), never the trader's BUY/HOLD/SELL. None if absent."
+        ),
     )
     risk_aggressive: RiskLens | None = Field(
         default=None, description="The aggressive risk analyst's lens. None if that debate is absent.",

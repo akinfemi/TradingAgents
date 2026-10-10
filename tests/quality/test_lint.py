@@ -657,3 +657,45 @@ def test_r2_10_figures_are_frozen_and_pathological_input_is_bounded(sheet):
     figs = figures(text)
     assert max(len(f.sentence) for f in figs) <= lint_module._MAX_SENTENCE + 20
     assert len(figures("$1M " * (lint_module._MAX_FIGURES + 10))) == lint_module._MAX_FIGURES
+
+
+@pytest.mark.unit
+def test_reader_voice_ignores_ordinary_financial_prose(sheet):
+    # Review of the AMD fixes (2026-10-10): each of these is ordinary
+    # third-person prose or quoted material and must not cost a revision.
+    clean = [
+        "The I/O die moves to 3nm next year.",
+        "The Phase I trial reads out in the US next quarter; Fund I raised $2B.",
+        "King Charles I and Schedule I filings are irrelevant here.",
+        "Shares fell 6% on Monday after the downgrade.",
+        "Earnings are due on Tuesday, November 4.",
+        "Weekend sales of the console beat the prior launch; Thanksgiving weekend demand held.",
+        "The investor, Elliott Management, disclosed a stake before the investor day.",
+        "Management said \"we expect gross margin near 54%\" and the CEO said “I think demand is durable.”",
+        "My Size Inc. and Our Next Energy are not covered; the 'For You' feed grew.",
+    ]
+    for text in clean:
+        for field in ("digest.headline", "digest.news_excerpt"):
+            assert not [f for f in lint_text(text, sheet, "digest", field) if f.kind == "voice"], (text, field)
+    # Excerpts and lenses are leads, not holds.
+    flags = [f for f in lint_text("I'd trim into strength.", sheet, "digest", "digest.risk_neutral") if f.kind == "voice"]
+    assert flags and all(f.severity == "minor" for f in flags)
+
+
+@pytest.mark.unit
+def test_rating_words_and_margin_words_ignore_other_meanings(sheet):
+    def kinds_for(digest, rating="Overweight"):
+        state = {"fact_sheet": None, "portfolio_decision": {"rating": rating}, "report_digest": digest}
+        return [(f["kind"], f["field"]) for f in lint_state(state)["flags"]
+                if f["kind"] in ("rating_word", "margin_wording")]
+    assert kinds_for({"news_excerpt": "Morgan Stanley cut it to Underweight on valuation.",
+                      "headline": "Overweight: BUY-side demand outruns SELL-side caution",
+                      "ruling": "Analysts at one broker moved the stock to Underweight; the bull case still won."}) == []
+    assert kinds_for({"headline": "HOLD: valuation balances growth"}, rating="Hold") == []
+    margin = {"conviction": 60, "ruling": ("AMD has a narrow moat in client chips and gross margin expanded "
+                                           "slightly; the decisive factor is MI400 timing, a clear-cut gap.")}
+    assert kinds_for(margin) == []
+    margin["ruling"] = "The bull case won decisively on cash generation."
+    assert kinds_for(margin) == [("margin_wording", "digest.ruling")]
+    margin.update(conviction=30, ruling="The bear side narrowly carried the debate.")
+    assert kinds_for(margin) == []
