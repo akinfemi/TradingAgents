@@ -29,7 +29,8 @@ YEARS = 6
 
 def split_history(symbol: str, as_of_date: str) -> tuple[pd.DataFrame, list[tuple[str, float]]]:
     """(frame of Date and split-only Close up to ``as_of_date``, [(split date, ratio)]
-    up to it). One Yahoo request per symbol per day, cached."""
+    to today: the basis the closes are on). One Yahoo request per symbol per
+    day, cached."""
     canonical = normalize_symbol(symbol)
     safe_symbol = safe_ticker_component(canonical)
     config = get_config()
@@ -62,9 +63,13 @@ def split_history(symbol: str, as_of_date: str) -> tuple[pd.DataFrame, list[tupl
     frame = pd.DataFrame({"Date": dates.dt.strftime("%Y-%m-%d"), "Close": data["Close"].astype(float)})
     mask = dates <= as_of_dt
     frame = frame[mask].reset_index(drop=True)
+    # Every split to today, not only to the as-of date: the closes are on
+    # today's split basis, so a later split still scales an earlier count
+    # (NVDA as of 2024-06-07: closes on the post-split basis, counts not).
     splits: list[tuple[str, float]] = []
     if "Stock Splits" in data.columns:
-        for day, ratio in zip(frame["Date"], data.loc[mask, "Stock Splits"].fillna(0).astype(float)):
+        all_days = dates.dt.strftime("%Y-%m-%d")
+        for day, ratio in zip(all_days, data["Stock Splits"].fillna(0).astype(float)):
             if ratio and ratio > 0 and ratio != 1:
                 splits.append((day, ratio))
     return frame, splits

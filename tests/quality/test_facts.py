@@ -572,3 +572,46 @@ def test_pe_and_flags_for_one_offs_net_income_and_dilution():
     assert f"{dipped} gross margin (30.0%) is 20 points below" in text
     assert "exceeds operating income" in text
     assert f"90.0M warrants or rights outstanding as of {cols[3].calendar}" in text and "9.0% of basic" in text
+
+
+@pytest.mark.unit
+def test_calendar_labels_never_repeat():
+    # COST's 12/12/12/16-week quarters: two midpoints fall in calendar Q1.
+    ends = ["2025-08-31", "2025-11-23", "2026-02-15", "2026-05-10", "2026-08-30"]
+    labels = [facts._q_label(e, ends, (8, 30)).calendar for e in ends]
+    assert len(set(labels)) == len(labels) and labels == sorted(labels)
+    assert labels[2:4] == ["2026Q1", "2026Q2"]
+
+
+@pytest.mark.unit
+def test_a_successor_registrant_keeps_its_predecessors_history():
+    new = {"facts": {"us-gaap": {"Revenues": {"units": {"USD": [
+        {"start": "2026-04-01", "end": "2026-06-30", "val": 5, "filed": "2026-08-03", "form": "10-Q"}]}}}}}
+    old = {"facts": {"us-gaap": {"Revenues": {"units": {"USD": [
+        {"start": "2026-01-01", "end": "2026-03-31", "val": 4, "filed": "2026-05-04", "form": "10-Q"},
+        {"start": "2026-04-01", "end": "2026-06-30", "val": 9, "filed": "2026-07-01", "form": "10-Q"}]}}}}}
+    merged = edgar_ext._merge_predecessor(new, old)
+    known, _ = edgar_ext._known(merged["facts"]["us-gaap"], "Revenues", "2026-10-09")
+    assert known[("2026-01-01", "2026-03-31")]["val"] == 4      # from the predecessor
+    assert known[("2026-04-01", "2026-06-30")]["val"] == 5      # the successor's later filing wins
+
+
+@pytest.mark.unit
+def test_anomaly_flags_say_only_what_the_figures_support():
+    st, values, frame, ends = _synthetic()
+    cols = [facts._q_label(e, ends, st.fy_end) for e in ends[-5:]]
+    last, prev = ends[-1], ends[-2]
+    # A bond moving to current: long-term −40%, total unchanged → no debt flag.
+    values["debt"][last], values["debt_current"] = 0.6e9, {last: 0.4e9, prev: 0.0}
+    values["debt"][prev] = 1.0e9
+    # Cash jumps with FCF unknown → no "not operating cash" claim.
+    values["cash"][last] = 9e9
+    del values["ocf"][last]
+    # A large non-operating LOSS.
+    values["non_operating"] = {last: -5e9}
+    values["net_income"][last] = 1e9
+    _, flags = facts._derived(st, cols, values, 100.0, last)
+    text = " ".join(flags)
+    assert "Total debt moved" not in text and "Long-term debt moved" not in text
+    assert "is not operating cash" not in text
+    assert "Non-operating loss" in text and "understate" in text

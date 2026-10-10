@@ -221,12 +221,40 @@ def _period_ends(us_gaap: dict, as_of: str) -> tuple[list[str], list[str]]:
     return sorted(quarter_ends), sorted(year_ends)
 
 
+# A successor registrant whose history sits under its predecessor's CIK: a
+# holding-company reorganization starts a new filer with one 10-Q.
+# ExxonMobil Holdings Corp took the XOM ticker in July 2026; Exxon Mobil Corp
+# (CIK 34088) holds every earlier quarter (eval 2026-10-10: XOM had 2 quarters).
+PREDECESSORS = {"0002115436": "0000034088"}
+
+
+def _merge_predecessor(facts: dict, older: dict) -> dict:
+    """The successor's facts, with the predecessor's for every period it lacks.
+    Both lists go in; ``_known`` keeps the latest filing per period."""
+    merged = {**facts, "facts": dict(facts.get("facts") or {})}
+    for taxonomy in ("us-gaap", "dei"):
+        new = dict((facts.get("facts") or {}).get(taxonomy) or {})
+        for tag, body in ((older.get("facts") or {}).get(taxonomy) or {}).items():
+            units = dict((new.get(tag) or {}).get("units") or {})
+            for unit, items in (body.get("units") or {}).items():
+                units[unit] = [*items, *units.get(unit, [])]
+            new[tag] = {**(new.get(tag) or body), "units": units}
+        merged["facts"][taxonomy] = new
+    return merged
+
+
 def load(ticker: str, as_of: str, n_quarters: int = 8, n_years: int = 2) -> Statements | None:
     """The filer's statements as known on ``as_of``, or None for a non-filer."""
     cik = cik_for(ticker)
     if cik is None:
         return None
     facts = _cached_json(_FACTS_URL.format(cik=cik), f"CIK{cik}.json")
+    if cik in PREDECESSORS:
+        try:
+            older = _cached_json(_FACTS_URL.format(cik=PREDECESSORS[cik]), f"CIK{PREDECESSORS[cik]}.json")
+            facts = _merge_predecessor(facts, older)
+        except Exception:  # noqa: BLE001 — the successor's own filings still stand
+            pass
     try:
         submissions = _cached_json(_SUBMISSIONS_URL.format(cik=cik), f"submissions-CIK{cik}.json")
     except Exception:  # noqa: BLE001 — identity and calendar degrade, statements don't

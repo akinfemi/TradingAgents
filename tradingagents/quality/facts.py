@@ -18,6 +18,7 @@ import logging
 import math
 import re
 from datetime import UTC, date, datetime, timedelta
+from functools import lru_cache
 from statistics import median
 from typing import Literal
 
@@ -173,6 +174,30 @@ _UNIT = {"USD": "usd", "USD/shares": "usd_per_share", "shares": "shares"}
 
 
 def _q_label(end: str, ends: list[str], fy_end) -> QuarterCol:
+    """The column for one quarter end. Calendar labels strictly increase along
+    ``ends``: COST's 12/12/12/16-week quarters put two quarter midpoints in one
+    calendar quarter (2026-02-15 and 2026-05-10 both read 2026Q1, and their
+    fact keys collided); a repeat moves to the next calendar quarter."""
+    labels = _monotonic_labels(tuple(ends), fy_end)
+    return labels.get(end) or _raw_q_label(end, ends, fy_end)
+
+
+@lru_cache(maxsize=256)
+def _monotonic_labels(ends: tuple[str, ...], fy_end) -> dict[str, QuarterCol]:
+    out: dict[str, QuarterCol] = {}
+    prev = None
+    for e in ends:
+        col = _raw_q_label(e, list(ends), fy_end)
+        y, q = int(col.calendar[:4]), int(col.calendar[-1])
+        if prev is not None and (y, q) <= prev:
+            y, q = (prev[0] + 1, 1) if prev[1] == 4 else (prev[0], prev[1] + 1)
+            col = QuarterCol(end=col.end, calendar=f"{y}Q{q}", fiscal=col.fiscal)
+        prev = (y, q)
+        out[e] = col
+    return out
+
+
+def _raw_q_label(end: str, ends: list[str], fy_end) -> QuarterCol:
     start = edgar_ext.quarter_start(end, ends)
     cal = edgar_ext.calendar_quarter(start, date.fromisoformat(end))
     fiscal = edgar_ext.fiscal_label(date.fromisoformat(end), fy_end)
@@ -466,7 +491,8 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
     eps_basis = f"{cal} diluted EPS [eps_diluted.{cal}]"
     if eps_q is None and v("net_income", end) is not None and dil_shares:
         eps_q = v("net_income", end) / dil_shares
-        eps_basis = f"{cal} net income [net_income.{cal}] ÷ [{dil_key}] (a fiscal Q4 files no quarterly EPS)"
+        why = "a fiscal Q4 files no quarterly EPS" if cal and end in st.year_ends else "no quarterly EPS tagged"
+        eps_basis = f"{cal} net income [net_income.{cal}] ÷ [{dil_key}] ({why})"
     q_profitable = (v("operating_income", end) or 0) > 0 if has_oi else (v("net_income", end) or 0) > 0
     if close and eps_q and eps_q > 0 and q_profitable:
         add("pe.run_rate", close / (eps_q * 4), "x", "pe_run_rate_gaap", f"close ({price_date}) ÷ ({eps_basis} × 4)",
@@ -568,13 +594,14 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
                 )
     # R8: anomalies a reader would ask about first (GOOGL 2026Q2: cash + short-
     # term investments up $116B in a quarter with −$5.9B FCF and a $98B gain).
+    moved: set[str] = set()
     if prev:
         fcf_q = (v("ocf", end) - v("capex", end)) if v("ocf", end) is not None and v("capex", end) is not None else None
         cs_now = (v("cash", end) or 0) + (v("sti", end) or 0) if v("cash", end) is not None else None
         cs_prev = (v("cash", prev) or 0) + (v("sti", prev) or 0) if v("cash", prev) is not None else None
-        if cs_now is not None and cs_prev:
+        if cs_now is not None and cs_prev and fcf_q is not None:
             move = cs_now - cs_prev
-            unexplained = move - (fcf_q or 0)
+            unexplained = move - fcf_q
             if abs(move) / cs_prev >= ANOMALY_QOQ and abs(unexplained) >= max(ANOMALY_MIN_USD, 0.1 * cs_prev):
                 flags.append(
                     f"Cash + short-term investments moved {_m(move)} ({move / cs_prev * 100:+.0f}%) in {cal} while "
@@ -582,24 +609,36 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
                     "marked to market or reclassified, borrowing, and stock sales before calling it a cushion; "
                     "say what drove it or that the filings don't say."
                 )
-        for concept, label in (("debt", "Long-term debt"), ("equity", "Stockholders' equity"),
-                               ("goodwill", "Goodwill"), ("liabilities", "Total liabilities")):
-            now_, then_ = v(concept, end), v(concept, prev)
+        def total_debt(at):
+            # Long-term plus current: a bond moving to "current" is not a move
+            # (COST 2026Q3: −31% long-term, +9% in total).
+            parts = (v("debt", at), v("debt_current", at))
+            return sum(x for x in parts if x is not None) if any(x is not None for x in parts) else None
+        for concept, label, now_, then_ in (
+                ("debt", "Total debt", total_debt(end), total_debt(prev)),
+                ("equity", "Stockholders' equity", v("equity", end), v("equity", prev)),
+                ("goodwill", "Goodwill", v("goodwill", end), v("goodwill", prev)),
+                ("liabilities", "Total liabilities", v("liabilities", end), v("liabilities", prev))):
+            if concept == "liabilities" and "debt" in moved:
+                continue              # one borrowing, one flag (NVDA got three)
             if now_ is not None and then_ and abs(now_ - then_) / abs(then_) >= ANOMALY_QOQ \
                     and abs(now_ - then_) >= ANOMALY_MIN_USD:
+                moved.add(concept)
+                keys = f"[debt.{cal}] + [debt_current.{cal}]" if concept == "debt" else f"[{concept}.{cal}]"
                 flags.append(f"{label} moved {_m(now_ - then_)} ({(now_ / then_ - 1) * 100:+.0f}%) in {cal} "
-                             f"[{concept}.{cal}]: name the cause (borrowing, an acquisition, a revaluation) "
+                             f"{keys}: name the cause (borrowing, an acquisition, a revaluation) "
                              "where it matters to the case.")
-    if prior and v("debt", end) is not None and v("debt", prior):
+    if prior and v("debt", end) is not None and v("debt", prior) and "debt" not in moved:
         total_now = (v("debt", end) or 0) + (v("debt_current", end) or 0)
         total_then = (v("debt", prior) or 0) + (v("debt_current", prior) or 0)
         if total_then and total_now / total_then - 1 >= 0.5 and total_now - total_then >= ANOMALY_MIN_USD:
             flags.append(f"Debt rose from {_m(total_then)} to {_m(total_now)} in a year: say what it funds "
                          "(capex, buybacks, an acquisition) and weigh it in the bear case.")
     if nonop is not None and ni and abs(nonop) >= ANOMALY_NONOP_SHARE * abs(ni) and abs(nonop) >= ANOMALY_MIN_USD:
-        flags.append(f"Non-operating income of {_m(nonop)} in {cal} is {abs(nonop) / abs(ni) * 100:.0f}% of net "
+        word, effect = ("income", "overstate") if nonop > 0 else ("loss", "understate")
+        flags.append(f"Non-operating {word} of {_m(nonop)} in {cal} is {abs(nonop) / abs(ni) * 100:.0f}% of net "
                      f"income [non_operating.{cal}]: earnings-based figures that include it (net income, EPS, P/E) "
-                     "overstate the operating business; use operating income, EV/EBIT or the operating P/E.")
+                     f"{effect} the operating business; use operating income, EV/EBIT or the operating P/E.")
     if sti_now and afs is not None and sti_now - afs > max(0.1 * sti_now, 1e9):
         flags.append(f"Of {_m(sti_now)} short-term investments in {cal}, {_m(sti_now - afs)} is not debt securities "
                      f"[sti_equity.{cal}]: likely marketable equity at market value. It is a volatile position, not "
@@ -666,8 +705,10 @@ def _valuation_history(st: edgar_ext.Statements, values: dict, frame: pd.DataFra
             if filed is None or not filed.value:
                 continue
             factor = 1.0
+            # Prices are on today's split basis: every split after the count
+            # was filed applies, whatever quarter it fell in.
             for day, ratio in splits or []:
-                if ends[i] < day and (filed.filed or "") < day:
+                if (filed.filed or "") < day:
                     factor *= ratio
             return filed.value * factor
         return None
@@ -716,6 +757,7 @@ def _valuation_history(st: edgar_ext.Statements, values: dict, frame: pd.DataFra
             seen["pe"] += 1
             points["pe"].append((label, px / (sum(nis) / dil)))
 
+    index_of = {_q_label(e, ends, st.fy_end).calendar: i for i, e in enumerate(ends)}
     facts: list[Fact] = []
     for metric, what in (("ev_sales", "EV ÷ TTM revenue"), ("ev_ebit", "EV ÷ TTM operating income"),
                          ("pe", "price ÷ TTM GAAP EPS")):
@@ -723,6 +765,10 @@ def _valuation_history(st: edgar_ext.Statements, values: dict, frame: pd.DataFra
         raw = points[metric][-HIST_QUARTERS:]
         series = [(q, x) for q, x in raw if math.isfinite(x) and lo < x < hi]
         if len(series) < HIST_MIN_POINTS or len(series) < 0.8 * len(raw):
+            continue
+        # A history that stopped long ago (MRNA's P/E ends in 2023Q2: losses
+        # since) anchors nothing today.
+        if index_of[series[-1][0]] < len(ends) - 3:
             continue
         vals = sorted(x for _, x in series)
         span = f"{series[0][0]}–{series[-1][0]}"
@@ -1028,6 +1074,23 @@ def build(ticker: str, trade_date: str, run_started_at: str | None = None, asset
             logger.warning("fact sheet: statements for %s failed: %s", ticker, exc, exc_info=True)
             sheet.unavailable.append("SEC statements could not be read; no fundamentals figures")
 
+    if st is not None and sheet.quarters:
+        # SEC's structured data can lag a filing by weeks (KO, 2026-10-09: the
+        # 10-Q for the quarter to 2026-07-03, filed 2026-07-29, was not in it).
+        recent = ((st.submissions.get("filings") or {}).get("recent") or {})
+        filed = [(rd, fd, f) for f, fd, rd in zip(recent.get("form") or [], recent.get("filingDate") or [],
+                                                  recent.get("reportDate") or [])
+                 if str(f).startswith(("10-Q", "10-K")) and fd <= trade_date and rd]
+        if filed:
+            report, filed_on, form = max(filed)
+            last_end = sheet.quarters[-1].end
+            if (date.fromisoformat(report) - date.fromisoformat(last_end)).days > 20:
+                note = (f"the {form} for the period to {report} (filed {filed_on}) is not yet in SEC's structured "
+                        f"data; statement figures run through {sheet.quarters[-1].calendar}")
+                sheet.unavailable.append(note)
+                sheet.flags.append(f"The latest filing ({form}, period to {report}, filed {filed_on}) is missing from "
+                                   f"the statements: every quarterly figure here ends at {last_end}. Say the figures "
+                                   "are a quarter old wherever recency matters, and don't call them the latest quarter.")
     if st is not None and not sheet.quarters and not any(u.startswith("SEC statements") for u in sheet.unavailable):
         # A 20-F filer (US GAAP or IFRS) files no quarterly statements: say so,
         # or the agents are told the sheet holds the company's statements.

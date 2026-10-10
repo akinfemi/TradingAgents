@@ -1348,12 +1348,17 @@ _FUNDAMENTAL = re.compile(r"revenue|sales|growth|margin|cash flow|\bFCF\b|guidan
                           r"share count|burn|runway", re.I)
 
 
-_NUM = re.compile(r"[-−]?\$?\d[\d,]*(?:\.\d+)?")
+# A measured value: a money amount, a percentage or a multiple, not a year
+# or a quarter label ("FY2026 guide $12B", "Q2: 34.0%").
+_MEASURE = re.compile(r"([-−]?)\$\s?(\d[\d,]*(?:\.\d+)?)|([-−]?\d[\d,]*(?:\.\d+)?)\s?(%|x\b|×)")
 
 
 def _first_number(text) -> float | None:
-    m = _NUM.search(str(text or ""))
-    return float(m.group(0).replace("−", "-").replace("$", "").replace(",", "")) if m else None
+    m = _MEASURE.search(str(text or ""))
+    if not m:
+        return None
+    sign, raw = (m.group(1), m.group(2)) if m.group(2) else ("", m.group(3))
+    return float((sign + raw).replace("−", "-").replace(",", ""))
 
 
 def check_trigger_headroom(digest: dict) -> list[LintFlag]:
