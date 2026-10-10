@@ -104,10 +104,19 @@ class Facts:
         """The facts of one line across its periods ("revenue_yoy" → revenue_yoy.2026Q2, ...)."""
         return [f for k, f in self.by_key.items() if k.startswith(line + ".")]
 
-    def numeric(self):
+    # Scenario figures ("TTM if the next quarter is flat", hurdles, history
+    # ranges): citable by key, but never the source of an uncited figure —
+    # ONDS's rolled TTM net income (+$86.14M) "supported" a wrong-signed
+    # "+$86.1M" of operating cash flow.
+    SCENARIO_PREFIXES = ("ttm_next.", "next_base.", "next_hurdle.", "seg_hurdle.")
+
+    def numeric(self, actual_only: bool = False):
         for f in self.by_key.values():
-            if isinstance(f.get("value"), (int, float)) and not isinstance(f.get("value"), bool):
-                yield f
+            if not isinstance(f.get("value"), (int, float)) or isinstance(f.get("value"), bool):
+                continue
+            if actual_only and (f["key"].startswith(self.SCENARIO_PREFIXES) or "_hist." in f["key"]):
+                continue
+            yield f
 
 
 # ---- figures in text ---------------------------------------------------------------------
@@ -779,6 +788,33 @@ def _period_sum(fig: Figure, facts: Facts) -> bool:
 # ---- checks ----------------------------------------------------------------------------------
 
 
+# "($1.02B / $145.0M − 1) × 100 = 603.4%": an explicit growth formula whose
+# result is wrong (eval, 2026-10-10: MRNA's was 600.7%).
+_SCALE_WORD = {"": 1.0, "k": 1e3, "m": 1e6, "b": 1e9, "t": 1e12}
+_FORMULA = re.compile(
+    r"\(\s*\$?\s?(\d[\d,]*(?:\.\d+)?)\s?([KMBT])?\s*(?:\[[^\]]*\]\s*)?/\s*\$?\s?(\d[\d,]*(?:\.\d+)?)\s?([KMBT])?"
+    r"\s*(?:\[[^\]]*\]\s*)?[−-]\s*1\s*\)\s*(?:[×x*]\s*100\s*)?=\s*([−-]?\d[\d,]*(?:\.\d+)?)\s?%", re.I)
+
+
+def check_formulas(text: str, stage: str, field_name: str) -> list[LintFlag]:
+    """Check 2 (part): an explicit (A / B − 1) × 100 = p% reproduces p."""
+    flags = []
+    for m in _FORMULA.finditer(text or ""):
+        a = float(m.group(1).replace(",", "")) * _SCALE_WORD[(m.group(2) or "").lower()]
+        b = float(m.group(3).replace(",", "")) * _SCALE_WORD[(m.group(4) or "").lower()]
+        stated = float(m.group(5).replace("−", "-").replace(",", ""))
+        if not b:
+            continue
+        actual = (a / b - 1) * 100
+        # Inputs are rounded as written: allow what their last digit could move.
+        slack = max(0.15, abs(actual) * 0.004)
+        if abs(actual - stated) > slack:
+            flags.append(LintFlag(_severity(field_name, "arithmetic"), "arithmetic", stage, field_name,
+                                  _sentence_at(text, m.start(), m.end())[:300],
+                                  f"the formula gives {actual:.1f}%, not {stated:g}%"))
+    return flags
+
+
 def check_numbers(text: str, facts: Facts, stage: str, field_name: str) -> list[LintFlag]:
     """Check 1. Cited figures must match their key; a cited key must exist."""
     flags: list[LintFlag] = []
@@ -927,7 +963,7 @@ def unsupported_figures(text: str, facts: Facts, stage: str, field_name: str) ->
     blocking (news and tools carry real figures the sheet doesn't), but
     load-bearing in load-bearing places."""
     flags: list[LintFlag] = []
-    numeric = list(facts.numeric())
+    numeric = list(facts.numeric(actual_only=True))
     # Money figures already established earlier in this text (cited, on the
     # sheet or derived): a figure derived once and reused below ("annualised
     # revenue $384.88B" in the base, bear and bull cases) is not re-derived.
@@ -1526,6 +1562,7 @@ def lint_text(text: str, facts: Facts, stage: str, field_name: str,
     flags = [
         *check_numbers(text, facts, stage, field_name),
         *check_comparisons(text, facts, stage, field_name),
+        *check_formulas(text, stage, field_name),
         *check_directions(text, facts, stage, field_name),
         *check_provenance(text, sources or {}, stage, field_name),
         *check_policy(text, stage, field_name),

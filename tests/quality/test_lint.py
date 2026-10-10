@@ -763,3 +763,15 @@ def test_a_flagged_one_off_quarter_used_as_a_base_is_a_lead():
              "report_digest": {"bull_thesis": "Margins recovered from 2025Q2's inventory charge."}}
     flags = check_one_off_bases(state)
     assert [f.field for f in flags] == ["pm"] and flags[0].kind == "one_off_base"
+
+
+@pytest.mark.unit
+def test_an_explicit_growth_formula_is_checked():
+    from tradingagents.quality.lint import check_formulas
+
+    bad = "Revenue jumped: ($1.02B / $145.0M − 1) × 100 = 650.0% sequential growth."
+    assert [f.kind for f in check_formulas(bad, "fundamentals_analyst", "fundamentals_report")] == ["arithmetic"]
+    good = "Revenue jumped: ($1.016B / $145.0M − 1) × 100 = 600.7% sequential growth."
+    assert check_formulas("($1.02B / $145.0M − 1) × 100 = 603.4%", "pm", "pm") == []   # right for its inputs
+    assert check_formulas(good, "fundamentals_analyst", "fundamentals_report") == []
+    assert check_formulas("($93.20B [F:x] / $77.67B − 1) = 20.0%", "pm", "pm") == []

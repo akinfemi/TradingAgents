@@ -533,6 +533,27 @@ def _derived(st: edgar_ext.Statements, cols: list[QuarterCol], values: dict, clo
             f"year-on-year growth the next report shows if revenue only holds at {cal}'s level: "
             f"[revenue.{cal}] ÷ [revenue.{base_cal}] − 1{note}", base_cal)
 
+    # A 3-month target values the business as the market will see it after the
+    # next report, not on today's TTM (eval, 2026-10-10: MSFT and JPM held TTM
+    # constant; JPM's own 13x on the rolled TTM gave ~$341, not $307). Each
+    # figure is today's TTM with the year-ago quarter swapped for the latest
+    # quarter's level, so it is what TTM reads if the next quarter is flat.
+    if base_end:
+        scale, note = _length_scale(end, base_end, ends)
+        base_cal = _q_label(base_end, ends, st.fy_end).calendar
+        for concept, key in (("revenue", "revenue"), ("operating_income", "operating_income"),
+                             ("net_income", "net_income")):
+            total, now_q, base_q = ttm(concept, end), v(concept, end), v(concept, base_end)
+            if total is None or now_q is None or base_q is None:
+                continue
+            rolled = total - base_q + now_q * scale
+            add(f"ttm_next.{key}", rolled, "usd", f"ttm_{concept}_after_next_report_if_flat",
+                f"TTM [ttm_{concept}.{cal}] − {base_cal} [{concept}.{base_cal}] + {cal} [{concept}.{cal}]"
+                f"{note}: TTM after the next report if that quarter matches {cal}", f"next:{cal}")
+            if concept == "net_income" and dil_shares:
+                add("ttm_next.eps", rolled / dil_shares, "usd_per_share", "ttm_eps_after_next_report_if_flat",
+                    f"[ttm_next.net_income] ÷ [{dil_key}]", f"next:{cal}")
+
     # ---- R8: what the investments are --------------------------------------------
     # GOOGL 2026Q2: $186.6B of "marketable securities" held $99.5B of debt
     # securities; the rest was equity marked to market, not cash.
@@ -856,7 +877,20 @@ def _next_earnings(st: edgar_ext.Statements, cols: list[QuarterCol], as_of: str)
     cal = edgar_ext.calendar_quarter(start, next_end)
     fiscal_text = f"Q{fiscal[1]} FY{fiscal[0]}" if fiscal else None
     covers = cal + (f" ({fiscal_text})" if fiscal_text and fiscal_text != f"Q{cal[-1]} FY{cal[:4]}" else "")
-    if year_ago:
+    # Last year's results release for the same quarter (8-K Item 2.02), when
+    # filed: banks release results weeks before the 10-Q (JPM: Oct 14 against
+    # a Nov 4 10-Q; the eval's report timed trims to the wrong date).
+    recent = (st.submissions.get("filings") or {}).get("recent") or {}
+    prior_end = next_end - timedelta(days=365)
+    releases = sorted(
+        fd for f, fd, items in zip(recent.get("form") or [], recent.get("filingDate") or [], recent.get("items") or [])
+        if f == "8-K" and "2.02" in str(items)
+        and 0 < (date.fromisoformat(fd) - prior_end).days <= 75)
+    if releases:
+        filed = date.fromisoformat(releases[0]) + timedelta(days=364)
+        basis = (f"last year's results for the same quarter were released {releases[0]} (8-K, Item 2.02), "
+                 "a year on")
+    elif year_ago:
         filed = date.fromisoformat(year_ago[0]["filed"]) + timedelta(days=364)
         basis = (f"last year's {year_ago[0]['form']} for the same quarter was filed "
                  f"{year_ago[0]['filed']}; results are usually released on or a few days before the filing")
@@ -1360,7 +1394,7 @@ def render(sheet: FactSheet) -> str:
 
     derived = [f for f in sheet.facts if f.key.startswith(("ttm_", "market_cap", "ev", "runway_", "shares.cover",
                                                            "pe.", "pe_operating.", "fcf_yield"))
-               and not f.key.startswith(("next_base", "next_hurdle"))
+               and not f.key.startswith(("next_base", "next_hurdle", "ttm_next"))
                and "_hist." not in f.key]
     if derived:
         out.append("\n### Derived (computed from the figures above)")
@@ -1381,13 +1415,16 @@ def render(sheet: FactSheet) -> str:
                 line += f"; today at percentile {got['percentile'].value:.0f} [F:{metric}_hist.percentile]"
             out.append(line + f" ({got['median'].derivation})")
 
-    hurdles = [f for f in sheet.facts if f.key.startswith(("next_base.", "next_hurdle.", "seg_hurdle."))]
+    hurdles = [f for f in sheet.facts if f.key.startswith(("next_base.", "next_hurdle.", "seg_hurdle.", "ttm_next."))]
     if hurdles:
         out.append("\n### The next report's comparison base (check any year-on-year threshold against it)")
         out.extend(f"- [F:{f.key}] {_fmt(f)} — {f.derivation}" for f in hurdles)
         out.append("A growth threshold at or below the 'if flat' figure is cleared by standing still: it tests "
                    "nothing. State a threshold with the level it implies and the sequential change from the latest "
-                   "quarter, and set it where it would actually discriminate.")
+                   "quarter, and set it where it would actually discriminate. The 'if flat' figures are hurdles for "
+                   "tests, not a base case. ttm_next.* is TTM after the next report if that quarter matches the "
+                   "latest one: the base a 3-month target's multiple applies to (or your own explicit "
+                   "next-quarter scenario).")
 
     macro = [f for f in sheet.facts if f.key.startswith("macro.")]
     if macro:

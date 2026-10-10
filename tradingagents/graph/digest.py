@@ -154,6 +154,8 @@ def build_digest_prompt(final_state: dict, computed_context: str | None = None) 
         "flagged as a likely one-off below (e.g. 'op margin 17% vs −2%, but the year-ago quarter carried an "
         "~$800M charge'). The bear points include the strongest version of the risk, not only 'valuation is high'.",
         "- If the news report found no company-specific news, add that to `flags` as a data gap.",
+        "- Trigger thresholds compare like with like: a seasonal quarterly metric against the same quarter "
+        "a year earlier or the TTM, not against the latest quarter.",
         "- One multiple basis per report: case conditions, the deciding variable and 'today' quote the "
         "multiple on the decision's method basis (annualized vs TTM), and say which.",
         "- The deciding variable must discriminate: if it is a year-on-year growth threshold, check it against "
