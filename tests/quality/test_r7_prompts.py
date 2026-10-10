@@ -58,3 +58,41 @@ def test_the_digest_reads_the_research_managers_ruling():
     sources = dict(_sources_from_state({"investment_plan": "RULING: the bear case holds",
                                         "investment_debate_state": {"bull_history": "b"}}))
     assert "the bear case holds" in (sources["Research manager ruling"] or "")
+
+
+@pytest.mark.unit
+def test_pm_prompt_carries_the_rating_bands_anchor_and_catalyst_rules():
+    """AMD review (2026-10-10): R7 fixes and R8 rules reach the PM."""
+    from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
+
+    llm = MagicMock()
+    llm.with_structured_output.side_effect = NotImplementedError
+    llm.invoke.return_value = AIMessage(content="**Rating**: Hold\n\n**Executive Summary**: s\n\n**Investment Thesis**: t")
+    create_portfolio_manager(llm)(_state())
+    prompt = str(llm.invoke.call_args[0][0])
+    assert "target move between -12% and -4%" in prompt          # Underweight's band
+    assert 'never "I"' in prompt                                  # voice
+    assert "Valuation history" in prompt and "P/E" in prompt     # anchor and cross-check
+    assert "valuation alone, with no catalyst view, is a Hold" in prompt
+
+
+@pytest.mark.unit
+def test_news_analyst_covers_competitors_and_cites_the_yield():
+    from tradingagents.agents.analysts.news_analyst import create_news_analyst
+
+    llm = MagicMock()
+    bound = MagicMock()
+    llm.bind_tools.return_value = bound
+    captured = {}
+
+    def fake_invoke(messages, *a, **k):
+        captured["text"] = str(messages)
+        return AIMessage(content="report")
+    bound.invoke.side_effect = fake_invoke
+    state = {**_state(), "messages": [], "asset_type": "stock"}
+    try:
+        create_news_analyst(llm)(state)
+    except Exception:  # noqa: BLE001 — the prompt is all this test reads
+        pass
+    text = captured.get("text") or str(llm.bind_tools.call_args) + str(bound.mock_calls)
+    assert "competitive picture" in text and "[F:macro.ust10y]" in text

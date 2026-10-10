@@ -57,6 +57,11 @@ LINES: list[tuple[str, str, tuple[str, ...]]] = [
     ("stock_sold_cash", "flow", ("ProceedsFromIssuanceOfCommonStock",)),
     ("stock_for_acquisitions", "flow", ("StockIssuedDuringPeriodValueAcquisitions",)),
     ("shares_weighted", "flow", ("WeightedAverageNumberOfSharesOutstandingBasic",)),
+    # R8: dilution beyond the basic count (AMD, 2026-10-10: a warrant for up
+    # to 160M shares sat outside "0.6% share growth").
+    ("shares_diluted", "flow", ("WeightedAverageNumberOfDilutedSharesOutstanding",)),
+    ("antidilutive", "flow", ("AntidilutiveSecuritiesExcludedFromComputationOfEarningsPerShareAmount",)),
+    ("warrants_outstanding", "stock", ("ClassOfWarrantOrRightOutstanding",)),
     ("cash", "stock", ("CashAndCashEquivalentsAtCarryingValue",)),
     # NVIDIA moved from MarketableSecuritiesCurrent to DebtSecuritiesCurrent
     # in fiscal 2027; a missing tag reads as a cash crash (staging, 2026-10-08).
@@ -83,7 +88,7 @@ LINES: list[tuple[str, str, tuple[str, ...]]] = [
 # Duration classes by span in days: a quarter, a half, nine months, a year.
 _SPANS = {"Q": (60, 115), "H": (150, 200), "9M": (240, 290), "FY": (300, 400)}
 # Per-share and share-count items are not additive: never derive their quarters.
-NON_ADDITIVE = {"eps_basic", "eps_diluted", "shares_weighted"}
+NON_ADDITIVE = {"eps_basic", "eps_diluted", "shares_weighted", "shares_diluted", "antidilutive"}
 
 
 @dataclass
@@ -282,7 +287,8 @@ def _rescale_thousands(st: Statements, cover: list[tuple[str, float]]) -> None:
         return min(cover, key=lambda c: abs((date.fromisoformat(c[0]) - date.fromisoformat(end)).days))[1]
 
     for table in (st.quarters, st.years):
-        for end, v in (table.get("shares_weighted") or {}).items():
+        for end, v in [kv for concept in ("shares_weighted", "shares_diluted")
+                       for kv in (table.get(concept) or {}).items()]:
             ref = nearest_cover(end)
             if ref and 0 < v.value < ref / 100:
                 v.derivation = f"filed as {v.value:,.0f}; scaled ×1,000 (tagged in thousands by the filer)"

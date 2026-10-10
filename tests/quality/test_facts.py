@@ -456,3 +456,75 @@ def test_a_share_class_ticker_finds_its_cik(monkeypatch):
     monkeypatch.setattr(sec_edgar, "_cached_json", lambda *_a, **_k: table)
     assert sec_edgar.cik_for("BRK.B") == sec_edgar.cik_for("brk-b") == "0001067983"
     assert sec_edgar.cik_for("BRK.C") is None
+
+
+# ---- R8: earnings multiples, valuation history, one-off and dilution flags ---------
+
+
+def _synthetic(n=12, split_after=None, gm_dip=None, warrants_at=None, oi=200e6, ni=None):
+    """A company with flat quarterly figures: revenue $1B, gross profit $500M
+    (one quarter dipped if asked), 1B basic shares (100M before a 10-for-1
+    split if asked), price $100 split-adjusted."""
+    ends = [f"{2023 + i // 4}-{(i % 4) * 3 + 3:02d}-{30 if (i % 4) in (1, 2) else 31}" for i in range(n)]
+    values: dict[str, dict[str, float]] = {k: {} for k in (
+        "revenue", "gross_profit", "operating_income", "net_income", "shares_weighted", "shares_diluted",
+        "cash", "sti", "debt", "debt_current", "eps_diluted", "ocf", "capex", "warrants_outstanding")}
+    for i, e in enumerate(ends):
+        values["revenue"][e] = 1e9
+        values["gross_profit"][e] = 5e8 if gm_dip is None or i != gm_dip else 3e8
+        values["operating_income"][e] = oi
+        values["net_income"][e] = ni if ni is not None else oi * 0.8
+        shares = 1e8 if split_after is not None and e <= split_after else 1e9
+        values["shares_weighted"][e] = shares
+        values["shares_diluted"][e] = shares * 1.01
+        values["cash"][e], values["debt"][e] = 2e9, 1e9
+        values["eps_diluted"][e] = values["net_income"][e] / (shares * 1.01)
+        values["ocf"][e], values["capex"][e] = 3e8, 1e8
+    if warrants_at is not None:
+        values["warrants_outstanding"][ends[warrants_at]] = 9e7
+    st = edgar_ext.Statements(cik="0", as_of=ends[-1], fy_end=(12, 31), quarter_ends=ends, year_ends=[])
+    frame = pd.DataFrame({"Date": pd.date_range(ends[0], ends[-1], freq="D").strftime("%Y-%m-%d")})
+    frame["Close"] = 100.0
+    return st, values, frame, ends
+
+
+@pytest.mark.unit
+def test_valuation_history_adjusts_counts_filed_before_a_split():
+    st, values, frame, ends = _synthetic(split_after="2024-06-30")
+    hist = {f.key: f.value for f in facts._valuation_history(st, values, frame, {"ev_sales": 25.0, "pe": 160.0},
+                                                             ends[-1], splits=[("2024-07-15", 10.0)])}
+    # $100 × 1B shares − $2B cash + $1B debt = $99B EV on $4B TTM revenue, every quarter.
+    assert hist["ev_sales_hist.low"] == hist["ev_sales_hist.high"] == 24.75
+    assert hist["ev_sales_hist.percentile"] == 100
+    assert hist["pe_hist.median"] == pytest.approx(157.8, abs=0.1)
+    # Without the split, the pre-split quarters read 10x too cheap.
+    unadjusted = {f.key: f.value for f in facts._valuation_history(st, values, frame, {"ev_sales": 25.0}, ends[-1])}
+    assert unadjusted["ev_sales_hist.low"] < 3
+
+
+@pytest.mark.unit
+def test_no_pe_on_an_operating_loss():
+    st, values, frame, ends = _synthetic(oi=-50e6, ni=40e6)
+    cols = [facts._q_label(e, ends, st.fy_end) for e in ends[-5:]]
+    derived, _ = facts._derived(st, cols, values, 100.0, ends[-1])
+    keys = {f.key for f in derived}
+    assert not keys & {"pe.ttm", "pe.run_rate"}
+    assert any(k.startswith("ttm_eps.") for k in keys)
+    assert facts._valuation_history(st, values, frame, {"pe": None}, ends[-1]) == [] or \
+        not any(f.key.startswith("pe_hist") for f in facts._valuation_history(st, values, frame, {}, ends[-1]))
+
+
+@pytest.mark.unit
+def test_pe_and_flags_for_one_offs_net_income_and_dilution():
+    st, values, frame, ends = _synthetic(gm_dip=8, warrants_at=10, oi=200e6, ni=260e6)
+    st.cover_shares = edgar_ext.Value(value=1e9, unit="shares", filed="2026-01-01", accn="x", tag="dei")
+    st.cover_shares_date = ends[-1]
+    cols = [facts._q_label(e, ends, st.fy_end) for e in ends[-5:]]
+    derived, flags = facts._derived(st, cols, values, 100.0, ends[-1])
+    pe = next(f for f in derived if f.key == "pe.ttm")
+    assert pe.value == pytest.approx(100 / (1.04e9 / 1.01e9), rel=1e-6)
+    text = " ".join(flags)
+    dipped = cols[1].calendar                       # shown: ends[7:12]; the dip is ends[8]
+    assert f"{dipped} gross margin (30.0%) is 20 points below" in text
+    assert "exceeds operating income" in text
+    assert f"90.0M warrants or rights outstanding as of {cols[3].calendar}" in text and "9.0% of basic" in text
